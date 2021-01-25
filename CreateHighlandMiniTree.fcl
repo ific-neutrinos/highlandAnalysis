@@ -1,0 +1,32 @@
+#include "trackfinderalgorithms.fcl"
+#include "ProtoDUNEBeamlineUtils.fcl"
+#include "ProtoDUNECalibration.fcl"
+
+BEGIN_PROLOG
+
+highlandAnalysis:
+{
+  module_type:		"CreateHighlandMiniTree"
+  
+  BeamModuleLabel:	"beamevent"
+  BeamlineUtils:        @local::standard_protodunebeamlineutils
+  
+  PFParticleTag:        "pandora"
+  GeneratorTag:         "generator"
+  TrackerTag:           "pandoraTrack"
+  ShowerTag:            "pandoraShower"
+  CalorimetryTagSCE:    "pandoracalo"
+  CalorimetryTagNoSCE:  "pandoracalonosce"
+  HitTag:               "gaushit"
+  
+  CalibrationParsSCE:   @local::CalorimetryParameters_SPProd2_MC_SCE
+  CalibrationParsNoSCE: @local::CalorimetryParameters_SPProd2_MC_35ms
+
+  
+  MaxGeneration:	10
+  MCMaxGeneration:	100	
+  
+  Debug:                false
+}
+
+END_PROLOG
