@@ -192,7 +192,7 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   if(info.IsMC){
     FillTrueInfo(evt,spill);
     if(spill->TrueParticles.empty())return;
-    }
+  }
 
   //beam related information
   spill->Beam = MakeBeam();
@@ -208,14 +208,18 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   
   //check if primary particle is beam particle (MC only)
   if(info.IsMC){
-    if(static_cast<AnaBeam*>(spill->Beam)->BeamParticle->TrueObject->ID == bunch->Particles.at(0)->TrueObject->ID){
-      static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = true;
-      if(fDebug)std::cout << "Primary particle in TPC and beam particle matched" << std::endl;
-    }
-    else {
-      static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = false;
-      if(fDebug)std::cout << "Primary part missmatched" << std::endl;
+    AnaTrueParticlePD* tp1 = static_cast<AnaTrueParticlePD*>(static_cast<AnaBeam*>(spill->Beam)->BeamParticle->TrueObject);
+    AnaTrueParticlePD* tp2 = static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject);
+    if(tp1 && tp2){
+      if(tp1->ID == tp2->ID){
+	static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = true;
+	if(fDebug)std::cout << "Primary particle in TPC and beam particle matched" << std::endl;
       }
+      else {
+	static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = false;
+	if(fDebug)std::cout << "Primary part missmatched" << std::endl;
+      }
+    }
   }
   
   //if spill has been correctly saved, delete previous one
@@ -331,7 +335,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
 	  //fill daughters vector
 	  truePart->Daughters.push_back(ls_truePart->Daughter(idau));
 	  //fill daughter info
-	  if(generation < fMCMaxGeneration || ls_truePart->NumberDaughters() > 0)
+	  if(generation < fMCMaxGeneration && ls_truePart->NumberDaughters() > 0)
 	    FillTruePartInfo(evt, piServ, pList, ls_trueDau.second, trueParticles, generation);
 	}
       }
@@ -468,7 +472,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
     int truePartID = GetTrueParticleID(evt, ls_part);
     for(int itrue = 0; itrue < (int)trueParticles.size(); itrue++){
       if(truePartID == trueParticles.at(itrue)->ID){
-	//std::cout << "matching true particle found with ID" << trueParticles.at(itrue)->ID << std::endl;
+	if(fDebug)std::cout << "matching true particle found" << std::endl;
 	part->TrueObject = trueParticles.at(itrue);
 	break;
       }
