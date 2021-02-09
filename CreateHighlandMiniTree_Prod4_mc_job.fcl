@@ -7,7 +7,7 @@ process_name: highlandAna
 services:
 {
   # Load the service that manages root files for histograms
-  TFileService:           { fileName: "minitree_data.root" }
+  TFileService:           { fileName: "minitree_mc.root" }
   TimeTracker:            {}
   MemoryTracker:          {}
   RandomNumberGenerator:  {} #ART native random number generator
