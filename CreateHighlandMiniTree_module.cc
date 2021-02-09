@@ -73,7 +73,7 @@ public:
 
   // HighLAND functions
   AnaSpillPD*         MakeSpill()       { return new AnaSpillPD(); }
-  AnaBunch*           MakeBunch()       { return new AnaBunch(); }
+  AnaBunchPD*         MakeBunch()       { return new AnaBunchPD(); }
   AnaBeamPD*          MakeBeam()        { return new AnaBeamPD(); }
   AnaDataQualityB*    MakeDataQuality() { return new AnaDataQuality(); }
   AnaEventInfoB*      MakeEventInfo()   { return new AnaEventInfo(); }
@@ -106,11 +106,11 @@ public:
 							    int planeID);
 
 
-  /*void collect_adc_for_CNN(const art::Event & evt, const recob::PFParticle* particle, const std::vector<recob::PFParticle>& pfpVec, 
+  void collect_adc_for_CNN(const art::Event & evt, const recob::PFParticle* particle, const std::vector<recob::PFParticle>& pfpVec, 
 			   protoana::ProtoDUNEPFParticleUtils & pfpUtil,const std::string& fPFParticleTag,
 			   std::vector<std::vector<float> >& reduced_adc_cnn_map,
 			   std::vector<Int_t>& reduced_adc_cnn_map_wires,
-			   std::vector<Int_t>& reduced_adc_cnn_map_times);*/
+			   std::vector<Int_t>& reduced_adc_cnn_map_times);
 
 
 private:
@@ -435,22 +435,28 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
   FillParticleInfo(evt, pfpUtil, pfpVec, ls_primaryPart, trueParticles, bunch, generation);
 
   // adcs for CNN input
-  /*
+
   std::vector<std::vector<float> > reduced_adc_cnn_map;
   std::vector<Int_t> reduced_adc_cnn_map_wires;
   std::vector<Int_t> reduced_adc_cnn_map_times;
-  */
-  //collect_adc_for_CNN(evt,ls_primaryPart,*pfpVec, pfpUtil, fPFParticleTag, spill->reduced_adc_cnn_map, spill->reduced_adc_cnn_map_wires, spill->reduced_adc_cnn_map_times);
-  /*
+
+  collect_adc_for_CNN(evt,ls_primaryPart,*pfpVec, pfpUtil, fPFParticleTag,reduced_adc_cnn_map, reduced_adc_cnn_map_wires, reduced_adc_cnn_map_times);
+
   for (size_t wi=0;wi<reduced_adc_cnn_map_wires.size();wi++){
     Int_t wire = reduced_adc_cnn_map_wires[wi];
     Int_t t0   = reduced_adc_cnn_map_times[wi];
+    AnaWireCNN cnnwire;
+    cnnwire.wire = wire;
+    cnnwire.time = t0;
     for (size_t s=0;s<reduced_adc_cnn_map[wi].size();s++){
-      Int_t time = t0+s;
-      spill->ADC[wire][time]=reduced_adc_cnn_map[wi][s];
+      //      Int_t time = t0+s;
+      cnnwire.adcs.push_back(reduced_adc_cnn_map[wi][s]);
+      //      std::cout << wire << " " << t0 << " " << time << std::endl;
+      //      spill->ADC[wire][time]=reduced_adc_cnn_map[wi][s];
     }
+    static_cast<AnaBunchPD*>(bunch)->CNNwires.push_back(cnnwire);
   }
-  */
+
 }
 
 
@@ -552,19 +558,26 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   protoana::ProtoDUNETrackUtils trackUtil;
   std::vector<anab::Calorimetry> SCEcalo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagSCE);
   std::vector<anab::Calorimetry> NoSCEcalo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagNoSCE);
+
+  if (NoSCEcalo.empty() || SCEcalo.empty()) return;
   //get a handle of all hits
   auto allHits = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
   //get calibrated dEdx
   std::vector<float> dEdx_SCE_cal = calibrationSCE.GetCalibratedCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagSCE, 2, -1.);
 
+
+  auto TpIndices = SCEcalo[0].TpIndices();
+  
   //number of hits
   part->NHitsPerPlane[2] = SCEcalo[0].dQdx().size();
+
+  //  std::cout << "Filling hits for particle. #hits = " << SCEcalo[0].dQdx().size() << std::endl;
 
   //loop over hits. Index 0 == recollection plane 2
   for(int ihit = 0; ihit < (int)SCEcalo[0].dQdx().size(); ihit++){
     //create a highland hit and a LArSoft hit
     AnaHitPD hit;
-    const recob::Hit & ls_hit = (*allHits)[SCEcalo[0].TpIndices().at(ihit)];
+    const recob::Hit & ls_hit = (*allHits)[TpIndices[ihit]];
 
     //fill calo info
     hit.dQdx_NoSCE = NoSCEcalo[0].dQdx().at(ihit);
@@ -591,6 +604,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     hit.WireID.Plane = 2; //the only one we are saving for the moment
     hit.WireID.Wire  = ls_hit.WireID().Wire;
 
+    //    std::cout << hit.Channel << " " << hit.StartTick << std::endl;
+    
     //add it to the vector of this
     part->Hits[2].push_back(hit);
   }
@@ -655,8 +670,10 @@ GetCNNOutputFromPFParticleFromPlane(const art::Event &evt,
   //loop over hits
   float cnn[4] = {0};
   int nhits = 0;
+  //  std::cout << "CNN outputs for hits: #hits = " << daughterPFP_hits.size() << std::endl;
   for(int ihit = 0; ihit < (int)daughterPFP_hits.size(); ihit++){
     std::array<float,4> cnn_out = CNN_results.getOutput(daughterPFP_hits[ihit]);
+    //    std::cout << ihit << ": " << daughterPFP_hits[ihit]->Channel() << " " << daughterPFP_hits[ihit]->PeakTime() << " --> " << cnn_out[CNN_results.getIndex("track")] << " " << cnn_out[CNN_results.getIndex("em")] << " " << cnn_out[CNN_results.getIndex("michel")] << std::endl;
     cnn[0] += cnn_out[ CNN_results.getIndex("track") ];
     cnn[1] += cnn_out[ CNN_results.getIndex("em") ];
     cnn[2] += cnn_out[ CNN_results.getIndex("michel") ];
@@ -705,20 +722,25 @@ void highlandAnalysis::CreateHighlandMiniTree::reset(){
 }
 
 //*****************************************************************************
-//void highlandAnalysis::CreateHighlandMiniTree::collect_adc_for_CNN(const art::Event & evt, const recob::PFParticle* particle, const std::vector<recob::PFParticle>& pfpVec, 
-//							 protoana::ProtoDUNEPFParticleUtils & pfpUtil,const std::string& fPFParticleTag,
-//							 std::vector<std::vector<float> >& reduced_adc_cnn_map,
-//							 std::vector<Int_t>& reduced_adc_cnn_map_wires,
-//							 std::vector<Int_t>& reduced_adc_cnn_map_times){
- //*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::collect_adc_for_CNN(const art::Event & evt, const recob::PFParticle* particle, const std::vector<recob::PFParticle>& pfpVec, 
+								   protoana::ProtoDUNEPFParticleUtils & pfpUtil,const std::string& fPFParticleTag,
+								   std::vector<std::vector<float> >& reduced_adc_cnn_map,
+								   std::vector<Int_t>& reduced_adc_cnn_map_wires,
+								   std::vector<Int_t>& reduced_adc_cnn_map_times){
+  //*****************************************************************************
 
-/*   bool debug=false;
+   bool debug=false;
 
+   //  art::InputTag fWireProducerLabel = "wclsdatanfsp:gauss";
   art::InputTag fWireProducerLabel = "wclsdatasp:gauss";
   auto wireHandle = evt.getValidHandle< std::vector<recob::Wire> >(fWireProducerLabel);
+  //  auto const& wires = evt.getValidHandle<std::vector<recob::Wire> >("wclsdatanfsp:gauss");
+  //  size_t nTotalWires = wires->size();
+  //  if (debug) std::cout << "#wires = " << nTotalWires << std::endl;
+  if (!wireHandle) return;
 
   size_t nTotalWires = wireHandle->size();
-  if (debug) std::cout << "#wires = " << wireHandle->size() << std::endl;*/
+  if (debug) std::cout << "#wires = " << nTotalWires << std::endl;
   /*
   for (size_t i=0;i<wireHandle->size();i++){
     if (debug) std::cout << i << " " << (*wireHandle)[i].Channel()  << " " << (*wireHandle)[i].View() << " " << (*wireHandle)[i].Signal().size() << std::endl;
@@ -735,7 +757,7 @@ void highlandAnalysis::CreateHighlandMiniTree::reset(){
   */
 
 
-  /*  std::vector<std::vector<std::vector<float> > > adc_cnn_map;
+  std::vector<std::vector<std::vector<float> > > adc_cnn_map;
     std::vector<Float_t> adc_cnn; // anselmo
     adc_cnn_map.resize(nTotalWires);
     std::vector<bool> adc_cnn_map_wire_filled(nTotalWires,false);
@@ -907,9 +929,9 @@ void highlandAnalysis::CreateHighlandMiniTree::reset(){
       }
       if (debug) std::cout << std::endl;
     }
-    
 
-    }*/
+    
+}
 
 
 DEFINE_ART_MODULE(highlandAnalysis::CreateHighlandMiniTree)
