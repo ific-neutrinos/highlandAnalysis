@@ -15,9 +15,9 @@ highlandAnalysis:
   GeneratorTag:         "generator"
   TrackerTag:           "pandoraTrack"
   ShowerTag:            "pandoraShower"
-  CalorimetryTagSCE:    "pandoracalo"
+  CalorimetryTagSCE:    "pandoracalinoxyzt"
   CalorimetryTagNoSCE:  "pandoracalonosce"
-  HitTag:               "gaushit"
+  HitTag:               "hitpdune"
   
   CalibrationParsSCE:   @local::CalorimetryParameters_SPProd2_MC_SCE
   CalibrationParsNoSCE: @local::CalorimetryParameters_SPProd2_MC_35ms
