@@ -136,6 +136,8 @@ private:
   int         fMaxGeneration;
   int         fMCMaxGeneration;
 
+  double      fNominalBeamMom;
+
   bool        fDebug;
 };
 
@@ -159,6 +161,8 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
 
   fMaxGeneration(p.get<int>("MaxGeneration")),
   fMCMaxGeneration(p.get<int>("MCMaxGeneration")),
+
+  fNominalBeamMom(p.get<double>("NominalBeamMom")), 
 
   fDebug(p.get<bool>("Debug")){
 
@@ -369,7 +373,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBeamInfo(art::Event const &ev
    
   beam->TOF = beamEvent.GetTOF();
 
-  std::vector< int > pdgs = fBeamlineUtils.GetPID(beamEvent, 1.);
+  std::vector< int > pdgs = fBeamlineUtils.GetPID(beamEvent, fNominalBeamMom);
   beam->PDGs.insert(beam->PDGs.end(), pdgs.begin(), pdgs.end());
 
   beam->nFibers[0] = beamEvent.GetActiveFibers( "XBPF022697" ).size();
@@ -559,28 +563,25 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   std::vector<anab::Calorimetry> SCEcalo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagSCE);
   std::vector<anab::Calorimetry> NoSCEcalo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagNoSCE);
 
-  if (NoSCEcalo.empty() || SCEcalo.empty()) return;
+  //safety check
+  if(SCEcalo.empty() || NoSCEcalo.empty()) return;
+
   //get a handle of all hits
   auto allHits = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
   //get calibrated dEdx
   std::vector<float> dEdx_SCE_cal = calibrationSCE.GetCalibratedCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagSCE, 2, -1.);
 
-
-  auto TpIndices = SCEcalo[0].TpIndices();
-  
   //number of hits
   part->NHitsPerPlane[2] = SCEcalo[0].dQdx().size();
-
-  //  std::cout << "Filling hits for particle. #hits = " << SCEcalo[0].dQdx().size() << std::endl;
 
   //loop over hits. Index 0 == recollection plane 2
   for(int ihit = 0; ihit < (int)SCEcalo[0].dQdx().size(); ihit++){
     //create a highland hit and a LArSoft hit
     AnaHitPD hit;
-    const recob::Hit & ls_hit = (*allHits)[TpIndices[ihit]];
+    const recob::Hit & ls_hit = (*allHits)[SCEcalo[0].TpIndices().at(ihit)];
 
     //fill calo info
-    hit.dQdx_NoSCE = NoSCEcalo[0].dQdx().at(ihit);
+    if(ihit < (int)NoSCEcalo[0].dQdx().size()) hit.dQdx_NoSCE = NoSCEcalo[0].dQdx().at(ihit);
     hit.dQdx       = SCEcalo[0].dQdx().at(ihit);
 
     hit.dEdx       = SCEcalo[0].dEdx().at(ihit);
@@ -604,8 +605,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     hit.WireID.Plane = 2; //the only one we are saving for the moment
     hit.WireID.Wire  = ls_hit.WireID().Wire;
 
-    //    std::cout << hit.Channel << " " << hit.StartTick << std::endl;
-    
     //add it to the vector of this
     part->Hits[2].push_back(hit);
   }

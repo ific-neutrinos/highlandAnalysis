@@ -7,7 +7,7 @@ BEGIN_PROLOG
 highlandAnalysis:
 {
   module_type:		"CreateHighlandMiniTree"
-  
+
   BeamModuleLabel:	"beamevent"
   BeamlineUtils:        @local::standard_protodunebeamlineutils
   
@@ -25,6 +25,8 @@ highlandAnalysis:
   
   MaxGeneration:	10
   MCMaxGeneration:	100	
+
+  NominalBeamMom:	1.0
   
   Debug:                false
 }
