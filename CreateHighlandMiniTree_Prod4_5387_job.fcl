@@ -1,8 +1,8 @@
 #include "services_dune.fcl"
 #include "CreateHighlandMiniTree.fcl"
-#include "missingproductfilter.fcl"
 
-process_name: highlandAnalysis
+
+process_name: highlandAna
 
 services:
 {
@@ -14,6 +14,15 @@ services:
   message:               @local::dune_message_services_prod_debug
   FileCatalogMetadata:   @local::art_file_catalog_mc
                          @table::protodune_services
+  PdspChannelMapService:  @local::pdspchannelmap
+  ChannelStatusService:   @local::pdsp_channel_status
+  BackTrackerService: {
+    BackTracker: {
+      SimChannelModuleLabel:    "tpcrawdecoder:simpleSC"
+      G4ModuleLabel:            "largeant"
+      MinimumHitEnergyFraction: 1e-1
+    }
+  }
 }
 
 services.message.destinations.LogStandardOut.threshold: "WARNING"
@@ -39,4 +48,5 @@ physics:
 }
 
 physics.analyzers.highlandana.Debug: true
-physics.analyzers.highlandana.CalibrationPars: @local::CalorimetryParameters_SPProd2_Data_r5387
+physics.analyzers.highlandana.CalibrationParsSCE:   @local::CalorimetryParameters_SPProd2_Data_r5387
+physics.analyzers.highlandana.CalibrationParsNoSCE: @local::CalorimetryParameters_SPProd2_Data_r5387
