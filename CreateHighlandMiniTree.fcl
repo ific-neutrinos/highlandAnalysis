@@ -22,6 +22,7 @@ highlandAnalysis:
   CalibrationParsSCE:   @local::CalorimetryParameters_SPProd2_MC_SCE
   CalibrationParsNoSCE: @local::CalorimetryParameters_SPProd2_MC_35ms
 
+  PIDFilename:		"dEdxrestemplates.root"
   
   MaxGeneration:	10
   MCMaxGeneration:	100	

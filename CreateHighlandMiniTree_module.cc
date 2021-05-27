@@ -39,6 +39,9 @@
 //root includes
 #include "TTree.h"
 #include "TVector3.h"
+#include "TProfile.h"
+#include "TFile.h"
+
 
 //highland includes
 #include "pdDataClasses.hxx"
@@ -118,6 +121,8 @@ private:
   TTree* fTree;
   TTree* fHeaderTree;
   AnaSpillPD* fspill;
+
+  std::map<int,TProfile*> PIDProfiles;
   
   // fcl parameters
   std::string fBeamModuleLabel;
@@ -132,6 +137,9 @@ private:
 
   protoana::ProtoDUNECalibration calibrationSCE;
   protoana::ProtoDUNECalibration calibrationNoSCE;
+
+  std::string fPIDFilename;
+  TFile *     fPIDFile;
 
   int         fMaxGeneration;
   int         fMCMaxGeneration;
@@ -159,12 +167,20 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   calibrationSCE(p.get<fhicl::ParameterSet>("CalibrationParsSCE")),
   calibrationNoSCE(p.get<fhicl::ParameterSet>("CalibrationParsNoSCE")),
 
+  fPIDFilename(p.get<std::string>("PIDFilename")),
+
   fMaxGeneration(p.get<int>("MaxGeneration")),
   fMCMaxGeneration(p.get<int>("MCMaxGeneration")),
 
   fNominalBeamMom(p.get<double>("NominalBeamMom")), 
 
   fDebug(p.get<bool>("Debug")){
+
+  fPIDFile = TFile::Open(fPIDFilename.c_str());
+  PIDProfiles[211]  = (TProfile*)fPIDFile->Get("dedx_range_pi" );
+  PIDProfiles[321]  = (TProfile*)fPIDFile->Get("dedx_range_ka" );
+  PIDProfiles[13]   = (TProfile*)fPIDFile->Get("dedx_range_mu" );
+  PIDProfiles[2212] = (TProfile*)fPIDFile->Get("dedx_range_pro");
 
 }
 
@@ -321,8 +337,9 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
   truePart->Momentum = ls_truePart->P();
   truePart->MomentumEnd = ls_truePart->P(np-2);
 
-  //increment generation
+  //increment generation and save generation info
   generation++;
+  truePart->Generation = generation;
 
   //go for daughters
   truePart->Daughters.clear();
@@ -440,7 +457,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
 
   // adcs for CNN input
 
-  std::vector<std::vector<float> > reduced_adc_cnn_map;
+  /*std::vector<std::vector<float> > reduced_adc_cnn_map;
   std::vector<Int_t> reduced_adc_cnn_map_wires;
   std::vector<Int_t> reduced_adc_cnn_map_times;
 
@@ -459,7 +476,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
       //      spill->ADC[wire][time]=reduced_adc_cnn_map[wi][s];
     }
     static_cast<AnaBunchPD*>(bunch)->CNNwires.push_back(cnnwire);
-  }
+    }*/
 
 }
 
@@ -487,6 +504,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
 	break;
       }
     }
+    if(fDebug)if(!part->TrueObject)std::cout << "matching true particle not found" << std::endl;
   }
 
   //fill PFP basic info
@@ -512,12 +530,13 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   std::pair<float*, int> cnnResult = GetCNNOutputFromPFParticleFromPlane(evt, mvaReader, pfpUtil, *ls_part, 2);
   for(int i = 0; i < 3; i++)part->CNNscore[i] = cnnResult.first[i] / cnnResult.second;
 
-  //increment generation
+  //increment generation and save generation info
   generation++;
+  part->Generation = generation;
 
   //go for daughters
   part->DaughtersIDs.clear();
-  
+
   //loop over daughters
   for(int idau = 0; idau < ls_part->NumDaughters(); idau++){
     //get daughter matching id
@@ -574,6 +593,11 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   //number of hits
   part->NHitsPerPlane[2] = SCEcalo[0].dQdx().size();
 
+  //dummy variables for chi2prot calculation
+  std::vector<double> dEdx, ResidualRange;
+  dEdx.clear();
+  ResidualRange.clear();
+
   //loop over hits. Index 0 == recollection plane 2
   for(int ihit = 0; ihit < (int)SCEcalo[0].dQdx().size(); ihit++){
     //create a highland hit and a LArSoft hit
@@ -585,9 +609,12 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     hit.dQdx       = SCEcalo[0].dQdx().at(ihit);
 
     hit.dEdx       = SCEcalo[0].dEdx().at(ihit);
+    dEdx.push_back(SCEcalo[0].dEdx().at(ihit));
+    
     if(ihit < (int)dEdx_SCE_cal.size())hit.dEdx_calib = dEdx_SCE_cal.at(ihit);
 
     hit.ResidualRange = SCEcalo[0].ResidualRange().at(ihit);
+    ResidualRange.push_back(SCEcalo[0].ResidualRange().at(ihit));
 
     hit.Position.SetXYZ(SCEcalo[0].XYZ().at(ihit).X(), SCEcalo[0].XYZ().at(ihit).Y(), SCEcalo[0].XYZ().at(ihit).Z());
 
@@ -609,6 +636,13 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     part->Hits[2].push_back(hit);
   }
 
+  //get PID
+  std::pair<double,int> proton_PID = trackUtil.Chi2PID(dEdx,ResidualRange,PIDProfiles[2212]);
+  std::pair<double,int> muon_PID   = trackUtil.Chi2PID(dEdx,ResidualRange,PIDProfiles[13]  );
+  part->Chi2Proton = proton_PID.first;
+  part->Chi2Muon   = muon_PID.first;
+  part->Chi2ndf    = proton_PID.second;
+  
   //compute truncated mean
   part->truncLibo_dEdx = pdAnaUtils::ComputeTruncatedMean(0.16,0.16,part->Hits[2]);
 }
@@ -711,6 +745,9 @@ void highlandAnalysis::CreateHighlandMiniTree::endJob(){
 
   //delete last spill before exiting
   delete fspill;
+
+  //close PID file
+  fPIDFile->Close();
 
 }
 
