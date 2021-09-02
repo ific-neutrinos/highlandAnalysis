@@ -48,6 +48,7 @@ physics:
 }
 
 physics.analyzers.highlandana.Debug: 		    true
+physics.analyzers.highlandana.Cosmics:    	    false
 physics.analyzers.highlandana.CalibrationParsSCE:   @local::CalorimetryParameters_SPProd4_MC_SCE
 physics.analyzers.highlandana.CalibrationParsNoSCE: @local::CalorimetryParameters_SPProd4_MC_SCE
 physics.analyzers.highlandana.NominalBeamMom:	    6.0

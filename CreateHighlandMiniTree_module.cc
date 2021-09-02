@@ -1,4 +1,4 @@
-////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////
 // Class:       CreateHighlandMiniTree
 // Module Type: analyzer
 // File:        CreateHighlandMiniTree_module.cc
@@ -87,28 +87,42 @@ public:
 
   // ----------------------------
 
-  void FillDQInfo      (art::Event const &evt, AnaDataQuality* dq);
-  void FillTrueInfo    (art::Event const &evt, AnaSpill* spill);
-  void FillTruePartInfo(art::Event const &evt, art::ServiceHandle<cheat::ParticleInventoryService> &piServ, 
-			const sim::ParticleList &pList, const simb::MCParticle* ls_truePart,
-			std::vector<AnaTrueParticleB*> &trueParticles, int generation);
-  void FillBeamInfo    (art::Event const &evt, AnaBeamPD* beam);
-  void FillBunchInfo   (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch, AnaSpillPD* spill);
-  void FillParticleInfo(art::Event const &evt, protoana::ProtoDUNEPFParticleUtils &pfpUtil,
-			art::ValidHandle<std::vector<recob::PFParticle>> &pfpVec, const recob::PFParticle* ls_part,
-			std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch, int generation);
-  void FillTrackInfo   (art::Event const &evt, const recob::Track* track, AnaParticlePD* part);
-  void FillShowerInfo  (const recob::Shower* shower, AnaParticlePD* part);
-  
+  void FillDQInfo          (art::Event const &evt, AnaDataQuality* dq);
+  void FillBeamTrueInfo    (art::Event const &evt, AnaSpill* spill);
+  void FillTruePartInfo    (art::Event const &evt, const sim::ParticleList &pList, const simb::MCParticle* ls_truePart,
+			    std::vector<AnaTrueParticleB*> &trueParticles, AnaTrueParticlePD* parent, 
+			    int generation, bool recursive = true);
+  void FillBeamInfo        (art::Event const &evt, AnaBeamPD* beam);
+  void FillBunchInfo       (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch, AnaSpillPD* spill);
+  void FillParticleInfo    (art::Event const &evt, art::ValidHandle<std::vector<recob::PFParticle>> &pfpVec, 
+			    const recob::PFParticle* ls_part,
+			    std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch, 
+			    int generation, bool BeamOrigin, bool isPandora = false);
+  void FillTrackInfo       (art::Event const &evt, const recob::Track* track, AnaParticlePD* part);
+  void FillShowerInfo      (const recob::Shower* shower, AnaParticlePD* part);
+  void FillCosmicsTrueInfo (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles);
+  void FillCosmicsInfo     (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch);
+
   //other functions/utilities
-  int GetTrueParticleID(art::Event const &evt, const recob::PFParticle* ls_part);
+  void CheckPrimaryMatching(std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch);
+  void TrueRecoMatching    (art::Event const &evt, const recob::PFParticle* ls_part, 
+			    AnaParticlePD* part, std::vector<AnaTrueParticleB*>& trueParticles);
+
+  AnaParticlePD* GetRecoParticle        (AnaBunch* bunch, int ID);
+  AnaTrueParticlePD* GetTrueParticle    (std::vector<AnaTrueParticleB*>& trueParticles, int ID);
+  int GetTrueParticleIDFromPFP          (art::Event const &evt, const recob::PFParticle* ls_part);
+
+  bool IsInterestingCosmic(art::Event const &evt, const recob::PFParticle* ls_part);
+
+  const simb::MCParticle* GetGeantGoodParticle(const simb::MCParticle &mcTruth);
+
   std::pair<float*,int> GetCNNOutputFromPFParticleFromPlane(const art::Event &evt, 
 							    const anab::MVAReader<recob::Hit,4> &CNN_results,
 							    protoana::ProtoDUNEPFParticleUtils& pfpUtil,
 							    const recob::PFParticle &part,
 							    int planeID);
 
-
+  //Anselmo stuff
   void collect_adc_for_CNN(const art::Event & evt, const recob::PFParticle* particle, const std::vector<recob::PFParticle>& pfpVec, 
 			   protoana::ProtoDUNEPFParticleUtils & pfpUtil,const std::string& fPFParticleTag,
 			   std::vector<std::vector<float> >& reduced_adc_cnn_map,
@@ -129,6 +143,7 @@ private:
   protoana::ProtoDUNEBeamlineUtils fBeamlineUtils;
   std::string fPFParticleTag;
   std::string fGeneratorTag;
+  std::string fCosmicGeneratorTag;
   std::string fTrackerTag;
   std::string fShowerTag;
   std::string fCalorimetryTagSCE;
@@ -141,12 +156,20 @@ private:
   std::string fPIDFilename;
   TFile *     fPIDFile;
 
+  bool        fCosmics;
+  
   int         fMaxGeneration;
   int         fMCMaxGeneration;
 
   double      fNominalBeamMom;
 
   bool        fDebug;
+
+  //forward declartion for calling functions in an easier way
+  protoana::ProtoDUNETruthUtils truthUtil;
+  protoana::ProtoDUNEPFParticleUtils pfpUtil;
+  protoana::ProtoDUNETrackUtils trackUtil;
+  art::ServiceHandle<cheat::ParticleInventoryService> piServ;
 };
 
 //*****************************************************************************
@@ -158,6 +181,7 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fBeamlineUtils(p.get< fhicl::ParameterSet >("BeamlineUtils")),
   fPFParticleTag(p.get<std::string>("PFParticleTag")),
   fGeneratorTag(p.get<std::string>("GeneratorTag")),
+  fCosmicGeneratorTag(p.get<std::string>("CosmicGeneratorTag")),
   fTrackerTag(p.get<std::string>("TrackerTag")),
   fShowerTag(p.get<std::string>("ShowerTag")),
   fCalorimetryTagSCE(p.get<std::string>("CalorimetryTagSCE")),
@@ -168,6 +192,8 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   calibrationNoSCE(p.get<fhicl::ParameterSet>("CalibrationParsNoSCE")),
 
   fPIDFilename(p.get<std::string>("PIDFilename")),
+
+  fCosmics(p.get<bool>("Cosmics")),
 
   fMaxGeneration(p.get<int>("MaxGeneration")),
   fMCMaxGeneration(p.get<int>("MCMaxGeneration")),
@@ -181,7 +207,6 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   PIDProfiles[321]  = (TProfile*)fPIDFile->Get("dedx_range_ka" );
   PIDProfiles[13]   = (TProfile*)fPIDFile->Get("dedx_range_mu" );
   PIDProfiles[2212] = (TProfile*)fPIDFile->Get("dedx_range_pro");
-
 }
 
 //*****************************************************************************
@@ -207,13 +232,19 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
     mf::LogVerbatim("CreateHighlandMiniTree") << "Beam quality check failed";
     return;
   }
-
+ 
   //true info
   if(info.IsMC){
-    FillTrueInfo(evt,spill);
-    if(spill->TrueParticles.empty())return;
+    FillBeamTrueInfo(evt,spill);
+    if(spill->TrueParticles.empty()){
+      mf::LogVerbatim("CreateHighlandMiniTree") << "No true info found";
+      return;
+    }
+    //get cosmics if desired
+    //for the moment cosmics are only retrieved if the beam true info has been succesfully stored
+    if(fCosmics)FillCosmicsTrueInfo(evt, spill->TrueParticles);
   }
-
+  
   //beam related information
   spill->Beam = MakeBeam();
   FillBeamInfo(evt, static_cast<AnaBeamPD*>(spill->Beam));
@@ -224,23 +255,17 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   AnaBunch* bunch = MakeBunch();
   spill->Bunches.push_back(bunch);
   FillBunchInfo(evt, spill->TrueParticles, bunch, spill);
-  if(bunch->Particles.empty())return;
+  if(bunch->Particles.empty()){
+    mf::LogVerbatim("CreateHighlandMiniTree") << "Returning";
+    return;
+  }
   
   //check if primary particle is beam particle (MC only)
-  if(info.IsMC){
-    AnaTrueParticlePD* tp1 = static_cast<AnaTrueParticlePD*>(static_cast<AnaBeam*>(spill->Beam)->BeamParticle->TrueObject);
-    AnaTrueParticlePD* tp2 = static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject);
-    if(tp1 && tp2){
-      if(tp1->ID == tp2->ID){
-	static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = true;
-	if(fDebug)std::cout << "Primary particle in TPC and beam particle matched" << std::endl;
-      }
-      else {
-	static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = false;
-	if(fDebug)std::cout << "Primary part missmatched" << std::endl;
-      }
-    }
-  }
+  if(info.IsMC)CheckPrimaryMatching(spill->TrueParticles, bunch);
+  
+  //get cosmics if desired
+  //for the moment cosmics are only retrieved if the beam info has been succesfully stored
+  if(fCosmics)FillCosmicsInfo(evt, spill->TrueParticles, bunch);
   
   //if spill has been correctly saved, delete previous one
   if(fspill)delete fspill;
@@ -264,15 +289,19 @@ void highlandAnalysis::CreateHighlandMiniTree::FillDQInfo(art::Event const &evt,
 }
 
 //*****************************************************************************
-void highlandAnalysis::CreateHighlandMiniTree::FillTrueInfo(art::Event const &evt, AnaSpill* spill){
+void highlandAnalysis::CreateHighlandMiniTree::FillBeamTrueInfo(art::Event const &evt, AnaSpill* spill){
 //*****************************************************************************
   
-  if(fDebug)std::cout << "Filling truth info" << std::endl;
+  if(fDebug)std::cout << "Filling truth beam info" << std::endl;
 
-  //create a truth utils instance
-  protoana::ProtoDUNETruthUtils truthUtil;
+  //get the truth particles
   auto mcTruths = evt.getValidHandle<std::vector<simb::MCTruth>>(fGeneratorTag);
- 
+
+  if(fDebug){
+    std::cout << "there is a primary truth particle" << std::endl;
+    std::cout << "and " << (*mcTruths)[0].NParticles()-1 << " truth background particles in this event" << std::endl;
+  }
+
   //get true primary particle
   const simb::MCParticle* ls_truePrimaryPart = truthUtil.GetGeantGoodParticle((*mcTruths)[0],evt);
   if(!ls_truePrimaryPart){
@@ -282,23 +311,23 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrueInfo(art::Event const &ev
   if(fDebug)std::cout << "true primary particle found" << std::endl;
 
   //fill true particle info recursively
-  art::ServiceHandle<cheat::ParticleInventoryService> piServ;
   const sim::ParticleList &pList = piServ->ParticleList();
 
   spill->TrueParticles.clear();
   
-  int generation = -1;
+  int generation = 0;
 
-  FillTruePartInfo(evt, piServ, pList, ls_truePrimaryPart, spill->TrueParticles, generation);
+  FillTruePartInfo(evt, pList, ls_truePrimaryPart, spill->TrueParticles, NULL, generation, true);
 }
 
 //*****************************************************************************
 void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const &evt,
-						     art::ServiceHandle<cheat::ParticleInventoryService> &piServ,
-						     const sim::ParticleList &pList, 
-						     const simb::MCParticle* ls_truePart,
-						     std::vector<AnaTrueParticleB*>& trueParticles,
-						     int generation){
+								const sim::ParticleList &pList,
+								const simb::MCParticle* ls_truePart,
+								std::vector<AnaTrueParticleB*>& trueParticles,
+								AnaTrueParticlePD* parent,
+								int generation,
+								bool recursive){
 //*****************************************************************************
 
   //create true particle and add it to the vector of true particles
@@ -306,15 +335,19 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
   trueParticles.push_back(truePart);
  
   //fill truepart information
-  truePart->ID = ls_truePart->TrackId();
+  truePart->ID       = ls_truePart->TrackId();
   truePart->ParentID = ls_truePart->Mother();
   truePart->Origin   = piServ->TrackIdToMCTruth_P(ls_truePart->TrackId())->Origin();
+  if(truePart->Origin==0 && parent)truePart->Origin = parent->Origin;
 
-  truePart->PDG = ls_truePart->PdgCode();
-  //truePart->ParentPDG = ls_truePart->PDGCode();
-  
+  truePart->PDG                  = ls_truePart->PdgCode();
+  if(parent)truePart->ParentPDG  = parent->PDG;
+  if(parent)truePart->GParentPDG = parent->ParentPDG;
+
+  truePart->Generation = generation;
+
   truePart->ProcessStart = truePart->ConvertProcess(ls_truePart->Process());
-  truePart->ProcessEnd = truePart->ConvertProcess(ls_truePart->EndProcess());
+  truePart->ProcessEnd   = truePart->ConvertProcess(ls_truePart->EndProcess());
 
   truePart->Position[0] = ls_truePart->Position(0).X();
   truePart->Position[1] = ls_truePart->Position(0).Y();
@@ -337,29 +370,26 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
   truePart->Momentum = ls_truePart->P();
   truePart->MomentumEnd = ls_truePart->P(np-2);
 
-  //increment generation and save generation info
+  //increment generation
   generation++;
-  truePart->Generation = generation;
 
   //go for daughters
   truePart->Daughters.clear();
 
   //loop over daughters to get their IDs
   for(int idau = 0; idau < ls_truePart->NumberDaughters(); idau++){
-    //loop over simb::MCParticle to get the daughter
-    for(auto const ls_trueDau : pList){
-      if(ls_trueDau.second->TrackId() == ls_truePart->Daughter(idau)){
-	//skip delta rays
-	if(ls_trueDau.second->Process() == "muIoni" || ls_trueDau.second->Process() == "hIoni" || 
-	   ls_trueDau.second->Process() == "compt"  || ls_trueDau.second->Process() == "eIoni")continue;
-	else{
-	  //fill daughters vector
-	  truePart->Daughters.push_back(ls_truePart->Daughter(idau));
-	  //fill daughter info
-	  if(generation < fMCMaxGeneration && ls_truePart->NumberDaughters() > 0)
-	    FillTruePartInfo(evt, piServ, pList, ls_trueDau.second, trueParticles, generation);
-	}
-      }
+    //fill daughters ID vector
+    truePart->Daughters.push_back(ls_truePart->Daughter(idau));
+    //fill daughter info recursively if desired
+    if(recursive){
+      //get the daughter
+      auto const ls_trueDau = pList[ls_truePart->Daughter(idau)];
+      //skip delta rays
+      if(ls_trueDau->Process() == "compt"  || ls_trueDau->Process() == "eIoni" ||
+	 ls_trueDau->Process() == "hIoni"  || ls_trueDau->Process() == "muIoni" ||
+	 ls_trueDau->Process() == "eBrem"  || ls_trueDau->Process() == "phot")continue;
+      if(generation < fMCMaxGeneration && ls_truePart->NumberDaughters() > 0)
+	FillTruePartInfo(evt, pList, ls_trueDau, trueParticles, truePart, generation, recursive);
     }
   }
 }
@@ -424,20 +454,21 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBeamInfo(art::Event const &ev
 
 //*****************************************************************************
 void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &evt,
-						  std::vector<AnaTrueParticleB*>& trueParticles,
-						  AnaBunch* bunch, AnaSpillPD* spill){
+							     std::vector<AnaTrueParticleB*>& trueParticles,
+							     AnaBunch* bunch, AnaSpillPD* spill){
 //*****************************************************************************
   
   if(fDebug)std::cout << "Filling bunch info" << std::endl;
 
-  //basic bunch info
+  //basic bunch info (there's only one bunch in PD)
   bunch->Bunch  = 1;
   bunch->Weight = 1;
 
-  //create a pfp utils instance, get the primary PFParticle and the vector of PFParticles
-  protoana::ProtoDUNEPFParticleUtils pfpUtil;
+  //Get the primary PFParticle and the vector of PFParticles
   std::vector<const recob::PFParticle*> primaryParticles = pfpUtil.GetPFParticlesFromBeamSlice(evt,fPFParticleTag);
   auto pfpVec = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
+
+  if(fDebug)std::cout << "there are " << (*pfpVec).size() << " PFP particles in this event" << std::endl;
 
   if(primaryParticles.size() == 0){
     std::cout << "No primary particle found" << std::endl;
@@ -451,9 +482,11 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
   bunch->Particles.clear();
 
   //fill particle info recursively
-  int generation = -1;
+  int generation  = 0;
+  bool BeamOrigin = true;
+  bool isPandora  = true;
   
-  FillParticleInfo(evt, pfpUtil, pfpVec, ls_primaryPart, trueParticles, bunch, generation);
+  FillParticleInfo(evt, pfpVec, ls_primaryPart, trueParticles, bunch, generation, BeamOrigin, isPandora);
 
   // adcs for CNN input
 
@@ -483,11 +516,10 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
 
 //*****************************************************************************
 void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const &evt,
-						     protoana::ProtoDUNEPFParticleUtils &pfpUtil,
-						     art::ValidHandle<std::vector<recob::PFParticle>> &pfpVec,
-						     const recob::PFParticle* ls_part,
-						     std::vector<AnaTrueParticleB*>& trueParticles,
-						     AnaBunch* bunch, int generation){
+								art::ValidHandle<std::vector<recob::PFParticle>> &pfpVec,
+								const recob::PFParticle* ls_part,
+								std::vector<AnaTrueParticleB*>& trueParticles,
+								AnaBunch* bunch, int generation, bool BeamOrigin, bool isPandora){
 //*****************************************************************************
 
   //create AnaParticle and add it to the bunch
@@ -495,32 +527,27 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   bunch->Particles.push_back(part);
 
   //if mc try to match a truth particle
-  if(!evt.isRealData()){
-    int truePartID = GetTrueParticleID(evt, ls_part);
-    for(int itrue = 0; itrue < (int)trueParticles.size(); itrue++){
-      if(truePartID == trueParticles.at(itrue)->ID){
-	if(fDebug)std::cout << "matching true particle found" << std::endl;
-	part->TrueObject = trueParticles.at(itrue);
-	break;
-      }
-    }
-    if(fDebug)if(!part->TrueObject)std::cout << "matching true particle not found" << std::endl;
-  }
-
+  if(!evt.isRealData())TrueRecoMatching(evt, ls_part, part, trueParticles);
+ 
   //fill PFP basic info
-  part->isPandora = ls_part->IsPrimary();
-  part->UniqueID = ls_part->Self();
+  part->isPandora  = isPandora;
+  part->BeamOrigin = BeamOrigin;
 
+  part->UniqueID = ls_part->Self();
+  part->ParentID = ls_part->Parent();
+  
+  part->Generation = generation;
+  
   //get number of hits of the PFP regardless track or shower
   const std::vector<art::Ptr<recob::Hit>> ls_part_hits = pfpUtil.GetPFParticleHits_Ptrs(*ls_part, evt, fPFParticleTag);
   part->NHits = ls_part_hits.size();
 
   // Determine if the particle is track-like or shower-like
-  const recob::Track* track = pfpUtil.GetPFParticleTrack(*ls_part,evt,fPFParticleTag,fTrackerTag);
+  const recob::Track*  track  = pfpUtil.GetPFParticleTrack(*ls_part,evt,fPFParticleTag,fTrackerTag);
   const recob::Shower* shower = pfpUtil.GetPFParticleShower(*ls_part,evt,fPFParticleTag,fShowerTag);
 
   //fill track-like info or showerlike info
-  if(track)FillTrackInfo(evt,track,part);
+  if(track) FillTrackInfo(evt,track,part);
   if(shower)FillShowerInfo(shower,part);
 
   //go for CNN
@@ -530,9 +557,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   std::pair<float*, int> cnnResult = GetCNNOutputFromPFParticleFromPlane(evt, mvaReader, pfpUtil, *ls_part, 2);
   for(int i = 0; i < 3; i++)part->CNNscore[i] = cnnResult.first[i] / cnnResult.second;
 
-  //increment generation and save generation info
+  //increment generation
   generation++;
-  part->Generation = generation;
 
   //go for daughters
   part->DaughtersIDs.clear();
@@ -545,7 +571,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
     part->DaughtersIDs.push_back(ls_dau->Self());
     //fill daughter info
     if(generation < fMaxGeneration)
-      FillParticleInfo(evt, pfpUtil, pfpVec, ls_dau, trueParticles, bunch, generation);
+      FillParticleInfo(evt, pfpVec, ls_dau, trueParticles, bunch, generation, BeamOrigin);
   }
 }
 
@@ -577,8 +603,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   //fill hit basic info
   for(int iplane = 0; iplane < 3; iplane++)part->Hits[iplane].clear();
 
-  //create a track utils instance and get calo information
-  protoana::ProtoDUNETrackUtils trackUtil;
+  //get calo information
   std::vector<anab::Calorimetry> SCEcalo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagSCE);
   std::vector<anab::Calorimetry> NoSCEcalo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagNoSCE);
 
@@ -609,12 +634,14 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     hit.dQdx       = SCEcalo[0].dQdx().at(ihit);
 
     hit.dEdx       = SCEcalo[0].dEdx().at(ihit);
-    dEdx.push_back(SCEcalo[0].dEdx().at(ihit));
     
-    if(ihit < (int)dEdx_SCE_cal.size())hit.dEdx_calib = dEdx_SCE_cal.at(ihit);
-
     hit.ResidualRange = SCEcalo[0].ResidualRange().at(ihit);
-    ResidualRange.push_back(SCEcalo[0].ResidualRange().at(ihit));
+
+    if(ihit < (int)dEdx_SCE_cal.size()){
+      hit.dEdx_calib = dEdx_SCE_cal.at(ihit);
+      dEdx.push_back(SCEcalo[0].dEdx().at(ihit));
+      ResidualRange.push_back(SCEcalo[0].ResidualRange().at(ihit));
+    }
 
     hit.Position.SetXYZ(SCEcalo[0].XYZ().at(ihit).X(), SCEcalo[0].XYZ().at(ihit).Y(), SCEcalo[0].XYZ().at(ihit).Z());
 
@@ -642,7 +669,12 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   part->Chi2Proton = proton_PID.first;
   part->Chi2Muon   = muon_PID.first;
   part->Chi2ndf    = proton_PID.second;
-  
+
+  //get vertex michel score
+  std::pair<double, int> vtx_michelscore = trackUtil.GetVertexMichelScore(*track, evt, fTrackerTag, fHitTag);
+  part->vtx_CNN_michelscore = vtx_michelscore.first;
+  part->vtx_CNN_NHits       = vtx_michelscore.second;
+
   //compute truncated mean
   part->truncLibo_dEdx = pdAnaUtils::ComputeTruncatedMean(0.16,0.16,part->Hits[2]);
 }
@@ -667,11 +699,172 @@ void highlandAnalysis::CreateHighlandMiniTree::FillShowerInfo(const recob::Showe
 }
 
 //*****************************************************************************
-int highlandAnalysis::CreateHighlandMiniTree::GetTrueParticleID(art::Event const &evt, const recob::PFParticle* ls_part){
+void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsTrueInfo(art::Event const &evt,
+								   std::vector<AnaTrueParticleB*>& trueParticles){
 //*****************************************************************************
 
-  //create a truth utils instance
-  protoana::ProtoDUNETruthUtils truthUtil;
+  if(fDebug)std::cout << "filling cosmics true info" << std::endl;
+  
+  //get the truth particles
+  auto mcTruths = evt.getValidHandle<std::vector<simb::MCTruth>>(fCosmicGeneratorTag);
+
+  if(fDebug)std::cout << "there are " << (*mcTruths)[0].NParticles() << " cosmic truth particles in this event" << std::endl;
+  
+  const sim::ParticleList &pList = piServ->ParticleList();
+  //loop over truth particles
+  for(int i = 0; i < (*mcTruths)[0].NParticles(); i++){
+    const simb::MCParticle* ls_trueCosmic = GetGeantGoodParticle((*mcTruths)[0].GetParticle(i));
+    if(ls_trueCosmic){//safety check
+      if(!GetTrueParticle(trueParticles,ls_trueCosmic->TrackId())){//safety check
+	int generation = 0;
+	FillTruePartInfo(evt, pList, ls_trueCosmic, trueParticles, NULL, generation, true);
+      }
+    }
+  }
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsInfo(art::Event const &evt,
+							       std::vector<AnaTrueParticleB*>& trueParticles,
+							       AnaBunch* bunch){
+//*****************************************************************************
+
+  if(fDebug)std::cout << "filling cosmics info" << std::endl;
+  
+  //get vector of pfp particles
+  auto pfpVec = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
+  if(fDebug)std::cout << "there are " << (*pfpVec).size() << " PFP particles in this event" << std::endl;
+
+  int cosmics = 0; 
+
+  //look for interesting cosmics and add them to the particle vector if they have not been added previously
+  for(const recob::PFParticle ls_part : (*pfpVec)){
+    if(!GetRecoParticle(bunch, ls_part.Self())){
+      if(IsInterestingCosmic(evt,&ls_part)){
+	cosmics++;
+	FillParticleInfo(evt, pfpVec, &ls_part, trueParticles, bunch, -1, false);
+      }
+    }
+  }
+  std::cout << cosmics << " interesting cosmics added to the particles vector" << std::endl;
+}
+
+//*****************************************************************************
+bool highlandAnalysis::CreateHighlandMiniTree::IsInterestingCosmic(art::Event const &evt, const recob::PFParticle* ls_part){
+//*****************************************************************************
+  
+  bool ItIs = false;
+
+  //const recob::Track* track = pfpUtil.GetPFParticleTrack(*ls_part,evt,fPFParticleTag,fTrackerTag);
+  //if(!track)return ItIs;
+
+  //we are only interested in cosmic rays which interact in the detector volume and generate secondary particles
+  if(ls_part->IsPrimary())ItIs = true;
+     //&& ls_part->NumDaughters() > 0 &&
+     //abs(track->End().X()) < 310 && 
+     //abs(track->End().Y()-300) < 250 &&
+     //abs(track->End().Z()-350) < 300)ItIs = true;
+
+  return ItIs;
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::CheckPrimaryMatching(std::vector<AnaTrueParticleB*>& trueParticles, 
+								    AnaBunch* bunch){
+//*****************************************************************************
+
+  //sanity check
+  if(trueParticles.size() == 0 || bunch->Particles.size() == 0)return;
+
+  AnaTrueParticlePD* tp1 = static_cast<AnaTrueParticlePD*>(trueParticles.at(0));
+  AnaTrueParticlePD* tp2 = static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject);
+  if(tp1 && tp2){
+    if(tp1->ID == tp2->ID){
+      static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = true;
+      if(fDebug)std::cout << "Primary particle in TPC and beam particle matched" << std::endl;
+    }
+    else {
+      static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = false;
+      if(fDebug)std::cout << "Primary part missmatched" << std::endl;
+    }
+  }
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const &evt, const recob::PFParticle* ls_part, 
+							       AnaParticlePD* part, std::vector<AnaTrueParticleB*>& trueParticles){
+//*****************************************************************************
+
+  bool found = false;
+
+  //get the true particle ID that generated this reco particle
+  int truePartID = GetTrueParticleIDFromPFP(evt, ls_part);
+
+  //look for it in the TrueParticles vector
+  for(int itrue = 0; itrue < (int)trueParticles.size(); itrue++){
+    if(truePartID == trueParticles.at(itrue)->ID){
+      //if(fDebug)std::cout << "matching true particle found" << std::endl;
+      part->TrueObject = trueParticles.at(itrue);
+      found = true;
+      break;
+    }
+  }
+
+  //if not found among stored true particles, look for it on the pList
+  if(!found){
+    if(fDebug)std::cout << "matching true particle not found among previously stored trueparticles," << std::endl;
+    const sim::ParticleList &pList = piServ->ParticleList();
+    for(auto const ls_truePart : pList){
+      if(ls_truePart.second->TrackId() == truePartID){
+	//if(fDebug)std::cout << "matching true particle found" << std::endl;
+	FillTruePartInfo(evt, pList, ls_truePart.second, trueParticles, NULL, -999, false);
+	part->TrueObject = trueParticles.back();
+	found = true;
+	break;
+      }
+    }
+  }
+  
+  if(!found)if(fDebug)std::cout << "matching true particle not found anywhere" << std::endl;
+}
+
+//*****************************************************************************
+AnaParticlePD* highlandAnalysis::CreateHighlandMiniTree::GetRecoParticle(AnaBunch* bunch, int ID){
+//*****************************************************************************
+
+  AnaParticlePD* part = NULL;
+
+  //loop over stored particles
+  for(int i = 0; i < (int)bunch->Particles.size(); i++){
+    if(bunch->Particles[i]->UniqueID == ID){
+      part = static_cast<AnaParticlePD*>(bunch->Particles[i]);
+      break;
+    }
+  }
+
+  return part;
+}
+
+//*****************************************************************************
+AnaTrueParticlePD* highlandAnalysis::CreateHighlandMiniTree::GetTrueParticle(std::vector<AnaTrueParticleB*>& trueParticles, int ID){
+//*****************************************************************************
+
+  AnaTrueParticlePD* truePart = NULL;
+
+  //loop over stored true particles
+  for(int i = 0; i < (int)trueParticles.size(); i++){
+    if(trueParticles[i]->ID == ID){
+      truePart = static_cast<AnaTrueParticlePD*>(trueParticles[i]);
+      break;
+    }
+  }
+
+  return truePart;
+}
+
+//*****************************************************************************
+int highlandAnalysis::CreateHighlandMiniTree::GetTrueParticleIDFromPFP(art::Event const &evt, const recob::PFParticle* ls_part){
+//*****************************************************************************
 
   //create a clock instance
   auto const clockData = art::ServiceHandle<detinfo::DetectorClocksService>()->DataFor(evt);
@@ -680,11 +873,22 @@ int highlandAnalysis::CreateHighlandMiniTree::GetTrueParticleID(art::Event const
   const simb::MCParticle* ls_truePart = truthUtil.GetMCParticleFromPFParticle(clockData, *ls_part, evt, fPFParticleTag);
 
   if(ls_truePart)return ls_truePart->TrackId();
-  else{
-    std::cout << "no match trueparticle found" << std::endl;
-    return -1;
+  else return -1;
+}
+
+//*****************************************************************************
+const simb::MCParticle* highlandAnalysis::CreateHighlandMiniTree::GetGeantGoodParticle(const simb::MCParticle &mcTruth){
+//*****************************************************************************
+
+  const sim::ParticleList & plist = piServ->ParticleList();
+
+  for(auto const part : plist){
+    if((mcTruth.PdgCode() == part.second->PdgCode()) && fabs(part.second->E() - mcTruth.E()) < 1e-5){
+      return part.second;
+    }
   }
 
+  return NULL;
 }
 
 //*****************************************************************************

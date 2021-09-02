@@ -13,6 +13,7 @@ highlandAnalysis:
   
   PFParticleTag:        "pandora"
   GeneratorTag:         "generator"
+  CosmicGeneratorTag:   "cosmicgenerator"
   TrackerTag:           "pandoraTrack"
   ShowerTag:            "pandoraShower"
   CalorimetryTagSCE:    "pandoracalinoxyzt"
@@ -23,6 +24,8 @@ highlandAnalysis:
   CalibrationParsNoSCE: @local::CalorimetryParameters_SPProd2_MC_35ms
 
   PIDFilename:		"dEdxrestemplates.root"
+
+  Cosmics:		true
   
   MaxGeneration:	10
   MCMaxGeneration:	100	
