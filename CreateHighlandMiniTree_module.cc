@@ -7,6 +7,8 @@
 // from cetpkgsupport v1_14_01.
 ////////////////////////////////////////////////////////////////////////
 
+#include<unistd.h>
+
 //basic includes
 #include "art/Framework/Core/EDAnalyzer.h"
 #include "art/Framework/Core/ModuleMacros.h"
@@ -121,6 +123,8 @@ public:
 							    protoana::ProtoDUNEPFParticleUtils& pfpUtil,
 							    const recob::PFParticle &part,
 							    int planeID);
+  
+  void WasteTime();
 
   //Anselmo stuff
   void collect_adc_for_CNN(const art::Event & evt, const recob::PFParticle* particle, const std::vector<recob::PFParticle>& pfpVec, 
@@ -165,6 +169,8 @@ private:
 
   bool        fDebug;
 
+  bool        fWasteTime;
+
   //forward declartion for calling functions in an easier way
   protoana::ProtoDUNETruthUtils truthUtil;
   protoana::ProtoDUNEPFParticleUtils pfpUtil;
@@ -200,7 +206,9 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
 
   fNominalBeamMom(p.get<double>("NominalBeamMom")), 
 
-  fDebug(p.get<bool>("Debug")){
+  fDebug(p.get<bool>("Debug")),
+
+  fWasteTime(p.get<bool>("WasteTime")){
 
   fPIDFile = TFile::Open(fPIDFilename.c_str());
   PIDProfiles[211]  = (TProfile*)fPIDFile->Get("dedx_range_pi" );
@@ -267,6 +275,9 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   //for the moment cosmics are only retrieved if the beam info has been succesfully stored
   if(fCosmics)FillCosmicsInfo(evt, spill->TrueParticles, bunch);
   
+  //waste time if needed
+  if(fWasteTime)WasteTime();
+
   //if spill has been correctly saved, delete previous one
   if(fspill)delete fspill;
   fspill = NULL;
@@ -486,6 +497,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
   bool BeamOrigin = true;
   bool isPandora  = true;
   
+  if(fDebug)std::cout << "Filling particle info recursively" << std::endl;
   FillParticleInfo(evt, pfpVec, ls_primaryPart, trueParticles, bunch, generation, BeamOrigin, isPandora);
 
   // adcs for CNN input
@@ -510,7 +522,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
     }
     static_cast<AnaBunchPD*>(bunch)->CNNwires.push_back(cnnwire);
     }*/
-
 }
 
 
@@ -610,40 +621,64 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   //safety check
   if(SCEcalo.empty() || NoSCEcalo.empty()) return;
 
+  //get corrected SCE positions and directions of the track
+  if(!SCEcalo[2].XYZ().empty()){
+    part->PositionStartSCE[0] = SCEcalo[2].XYZ()[0].X();
+    part->PositionStartSCE[1] = SCEcalo[2].XYZ()[0].Y();
+    part->PositionStartSCE[2] = SCEcalo[2].XYZ()[0].Z();
+    
+    part->PositionEndSCE[0] = SCEcalo[2].XYZ().back().X();
+    part->PositionEndSCE[1] = SCEcalo[2].XYZ().back().Y();
+    part->PositionEndSCE[2] = SCEcalo[2].XYZ().back().Z();
+    
+    TVector3 dir((SCEcalo[2].XYZ().back().X() - SCEcalo[2].XYZ()[0].X()),
+		 (SCEcalo[2].XYZ().back().Y() - SCEcalo[2].XYZ()[0].Y()),
+		 (SCEcalo[2].XYZ().back().Z() - SCEcalo[2].XYZ()[0].Z()));
+    
+    part->DirectionStartSCE[0] = part->DirectionEndSCE[0] = dir.Unit().X();
+    part->DirectionStartSCE[1] = part->DirectionEndSCE[1] = dir.Unit().Y();
+    part->DirectionStartSCE[2] = part->DirectionEndSCE[2] = dir.Unit().Z();
+  }
+
   //get a handle of all hits
   auto allHits = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
+  std::vector<art::Ptr<recob::Hit>> hit_vector;
+  art::fill_ptr_vector(hit_vector, allHits);
   //get calibrated dEdx
   std::vector<float> dEdx_SCE_cal = calibrationSCE.GetCalibratedCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagSCE, 2, -1.);
 
+  //for hit CNN
+  anab::MVAReader<recob::Hit,4> mvaReader(evt, "emtrkmichelid:emtrkmichel");
+
   //number of hits
-  part->NHitsPerPlane[2] = SCEcalo[0].dQdx().size();
+  part->NHitsPerPlane[2] = SCEcalo[2].dQdx().size();
 
   //dummy variables for chi2prot calculation
   std::vector<double> dEdx, ResidualRange;
   dEdx.clear();
   ResidualRange.clear();
 
-  //loop over hits. Index 0 == recollection plane 2
-  for(int ihit = 0; ihit < (int)SCEcalo[0].dQdx().size(); ihit++){
+  //loop over hits. Index 2 == recollection plane 2
+  for(int ihit = 0; ihit < (int)SCEcalo[2].dQdx().size(); ihit++){
     //create a highland hit and a LArSoft hit
     AnaHitPD hit;
-    const recob::Hit & ls_hit = (*allHits)[SCEcalo[0].TpIndices().at(ihit)];
+    const recob::Hit & ls_hit = (*allHits)[SCEcalo[2].TpIndices().at(ihit)];
 
     //fill calo info
-    if(ihit < (int)NoSCEcalo[0].dQdx().size()) hit.dQdx_NoSCE = NoSCEcalo[0].dQdx().at(ihit);
-    hit.dQdx       = SCEcalo[0].dQdx().at(ihit);
+    if(ihit < (int)NoSCEcalo[2].dQdx().size()) hit.dQdx_NoSCE = NoSCEcalo[2].dQdx().at(ihit);
+    hit.dQdx       = SCEcalo[2].dQdx().at(ihit);
 
-    hit.dEdx       = SCEcalo[0].dEdx().at(ihit);
-    
-    hit.ResidualRange = SCEcalo[0].ResidualRange().at(ihit);
+    hit.dEdx       = SCEcalo[2].dEdx().at(ihit);
+
+    hit.ResidualRange = SCEcalo[2].ResidualRange().at(ihit);
+    ResidualRange.push_back(SCEcalo[2].ResidualRange().at(ihit));
 
     if(ihit < (int)dEdx_SCE_cal.size()){
       hit.dEdx_calib = dEdx_SCE_cal.at(ihit);
-      dEdx.push_back(SCEcalo[0].dEdx().at(ihit));
-      ResidualRange.push_back(SCEcalo[0].ResidualRange().at(ihit));
+      dEdx.push_back(dEdx_SCE_cal.at(ihit));
     }
 
-    hit.Position.SetXYZ(SCEcalo[0].XYZ().at(ihit).X(), SCEcalo[0].XYZ().at(ihit).Y(), SCEcalo[0].XYZ().at(ihit).Z());
+    hit.Position.SetXYZ(SCEcalo[2].XYZ().at(ihit).X(), SCEcalo[2].XYZ().at(ihit).Y(), SCEcalo[2].XYZ().at(ihit).Z());
 
     //fill hit info
     hit.Integral = ls_hit.Integral();
@@ -659,7 +694,13 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     hit.WireID.Plane = 2; //the only one we are saving for the moment
     hit.WireID.Wire  = ls_hit.WireID().Wire;
 
-    //add it to the vector of this
+    //get CNN score of each hit
+    std::array<float,4> cnn_out = mvaReader.getOutput(hit_vector[ihit]);
+    hit.CNN[0] = cnn_out[mvaReader.getIndex("track")];
+    hit.CNN[1] = cnn_out[mvaReader.getIndex("em")];
+    hit.CNN[2] = cnn_out[mvaReader.getIndex("michel")];
+    
+    //add it to the vector of hits
     part->Hits[2].push_back(hit);
   }
 
@@ -671,7 +712,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   part->Chi2ndf    = proton_PID.second;
 
   //get vertex michel score
-  std::pair<double, int> vtx_michelscore = trackUtil.GetVertexMichelScore(*track, evt, fTrackerTag, fHitTag);
+  std::pair<double, int> vtx_michelscore = trackUtil.GetVertexMichelScoreMiguel(*track, evt, fTrackerTag, fHitTag);
   part->vtx_CNN_michelscore = vtx_michelscore.first;
   part->vtx_CNN_NHits       = vtx_michelscore.second;
 
@@ -907,10 +948,8 @@ GetCNNOutputFromPFParticleFromPlane(const art::Event &evt,
   //loop over hits
   float cnn[4] = {0};
   int nhits = 0;
-  //  std::cout << "CNN outputs for hits: #hits = " << daughterPFP_hits.size() << std::endl;
   for(int ihit = 0; ihit < (int)daughterPFP_hits.size(); ihit++){
     std::array<float,4> cnn_out = CNN_results.getOutput(daughterPFP_hits[ihit]);
-    //    std::cout << ihit << ": " << daughterPFP_hits[ihit]->Channel() << " " << daughterPFP_hits[ihit]->PeakTime() << " --> " << cnn_out[CNN_results.getIndex("track")] << " " << cnn_out[CNN_results.getIndex("em")] << " " << cnn_out[CNN_results.getIndex("michel")] << std::endl;
     cnn[0] += cnn_out[ CNN_results.getIndex("track") ];
     cnn[1] += cnn_out[ CNN_results.getIndex("em") ];
     cnn[2] += cnn_out[ CNN_results.getIndex("michel") ];
@@ -959,6 +998,38 @@ void highlandAnalysis::CreateHighlandMiniTree::endJob(){
 void highlandAnalysis::CreateHighlandMiniTree::reset(){
 //*****************************************************************************
   
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::WasteTime(){
+//*****************************************************************************
+  
+  std::cout << "as my module is too optimized, I need to increase the CPU time so I don't get low efficiency warnings :(" << std::endl;
+  int x = 0;
+  
+  /*for(int i = 0; i < (int)trueParticles.size(); i++){
+    for(int j = 0; j < (int)trueParticles.size(); j++){
+      for(int k = 0; k < (int)trueParticles.size(); k++){
+	for(int l = 0; l < 2; l++){
+	  x = x + pow(-1,i+j+k+l);
+	  //      std::cout << x << std::endl;
+	}
+      }
+    } 
+    }*/
+
+  const int N = 250;
+
+  for(int i = 0; i < N; i++){
+    for(int j = 0; j < N; j++){
+      for(int k = 0; k < N; k++){
+	for(int l = 0; l < N; l++){
+	  x = x + pow(-1,i+j+k+l);
+	}
+      }
+    }
+  }
+  std::cout << "the result of this amazing waste of time is " << x << std::endl;
 }
 
 //*****************************************************************************

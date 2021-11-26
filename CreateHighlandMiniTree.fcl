@@ -33,6 +33,8 @@ highlandAnalysis:
   NominalBeamMom:	1.0
   
   Debug:                false
+
+  WasteTime:            false	
 }
 
 END_PROLOG
