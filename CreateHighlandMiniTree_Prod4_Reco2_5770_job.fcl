@@ -1,0 +1,60 @@
+#include "services_dune.fcl"
+#include "CreateHighlandMiniTree.fcl"
+
+
+process_name: highlandAna
+
+services:
+{
+  # Load the service that manages root files for histograms
+  TFileService:          { fileName: "minitree_data.root" }
+  TimeTracker:           {}
+  MemoryTracker:         {}
+  RandomNumberGenerator: {} #ART native random number generator
+  message:               @local::dune_message_services_prod_debug
+  FileCatalogMetadata:   @local::art_file_catalog_mc
+                         @table::protodune_services
+  PdspChannelMapService:  @local::pdspchannelmap
+  ChannelStatusService:   @local::pdsp_channel_status
+  BackTrackerService: {
+    BackTracker: {
+      SimChannelModuleLabel:    "tpcrawdecoder:simpleSC"
+      G4ModuleLabel:            "largeant"
+      MinimumHitEnergyFraction: 1e-1
+    }
+  }
+}
+
+services.message.destinations.LogStandardOut.threshold: "WARNING"
+
+source:
+{
+  module_type: RootInput
+  maxEvents: -1
+  fileNames: ["input_file.root"]
+}
+
+physics:
+{
+ analyzers:
+  {
+   highlandana:          @local::highlandAnalysis
+  }
+ 
+ ana:  [ highlandana ]
+
+ end_paths:     [ ana ]
+
+}
+
+physics.analyzers.highlandana.Debug:   true
+physics.analyzers.highlandana.Cosmics: false
+physics.analyzers.highlandana.MaxGeneration: 0
+physics.analyzers.highlandana.CalorimetryTagSCE: "pandoracali"
+physics.analyzers.highlandana.CalibrationParsSCE:   @local::CalorimetryParameters_SPProd4_Data_r5770
+physics.analyzers.highlandana.CalibrationParsNoSCE: @local::CalorimetryParameters_SPProd4_Data_r5770
+physics.analyzers.highlandana.NominalBeamMom:	    6.0
+physics.analyzers.highlandana.CalibrationParsSCE.X_correction:  "./Xcalo_r5770.root"
+physics.analyzers.highlandana.CalibrationParsSCE.YZ_correction: "./YZcalo_r5770.root"
+physics.analyzers.highlandana.CalibrationParsNoSCE.X_correction:  "./Xcalo_r5770.root"
+physics.analyzers.highlandana.CalibrationParsNoSCE.YZ_correction: "./YZcalo_r5770.root"

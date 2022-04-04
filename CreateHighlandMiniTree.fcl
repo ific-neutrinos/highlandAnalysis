@@ -16,8 +16,7 @@ highlandAnalysis:
   CosmicGeneratorTag:   "cosmicgenerator"
   TrackerTag:           "pandoraTrack"
   ShowerTag:            "pandoraShower"
-  CalorimetryTagSCE:    "pandoracalinoxyzt"
-  CalorimetryTagNoSCE:  "pandoracalonosce"
+  CalorimetryTag:       "pandoracali"
   HitTag:               "hitpdune"
   
   CalibrationParsSCE:   @local::CalorimetryParameters_SPProd2_MC_SCE
@@ -35,6 +34,7 @@ highlandAnalysis:
   Debug:                false
 
   WasteTime:            false	
+  NLoopWT:              250	
 }
 
 END_PROLOG

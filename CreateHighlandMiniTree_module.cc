@@ -81,7 +81,7 @@ public:
   AnaBunchPD*         MakeBunch()       { return new AnaBunchPD(); }
   AnaBeamPD*          MakeBeam()        { return new AnaBeamPD(); }
   AnaDataQualityB*    MakeDataQuality() { return new AnaDataQuality(); }
-  AnaEventInfoB*      MakeEventInfo()   { return new AnaEventInfo(); }
+  AnaEventInfoPD*     MakeEventInfo()   { return new AnaEventInfoPD(); }
 
   AnaTrueParticlePD*  MakeTrueParticle(){ return new AnaTrueParticlePD(); }
   AnaTrueVertex*      MakeTrueVertex()  { return new AnaTrueVertex(); }
@@ -150,12 +150,11 @@ private:
   std::string fCosmicGeneratorTag;
   std::string fTrackerTag;
   std::string fShowerTag;
-  std::string fCalorimetryTagSCE;
-  std::string fCalorimetryTagNoSCE;
   std::string fHitTag;
 
-  protoana::ProtoDUNECalibration calibrationSCE;
-  protoana::ProtoDUNECalibration calibrationNoSCE;
+  std::string fCalorimetryTag;
+
+  protoana::ProtoDUNECalibration fCalibration;
 
   std::string fPIDFilename;
   TFile *     fPIDFile;
@@ -170,6 +169,7 @@ private:
   bool        fDebug;
 
   bool        fWasteTime;
+  int         fNLoopWT;
 
   //forward declartion for calling functions in an easier way
   protoana::ProtoDUNETruthUtils truthUtil;
@@ -190,12 +190,11 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fCosmicGeneratorTag(p.get<std::string>("CosmicGeneratorTag")),
   fTrackerTag(p.get<std::string>("TrackerTag")),
   fShowerTag(p.get<std::string>("ShowerTag")),
-  fCalorimetryTagSCE(p.get<std::string>("CalorimetryTagSCE")),
-  fCalorimetryTagNoSCE(p.get<std::string>("CalorimetryTagNoSCE")),
   fHitTag(p.get<std::string>("HitTag")),
 
-  calibrationSCE(p.get<fhicl::ParameterSet>("CalibrationParsSCE")),
-  calibrationNoSCE(p.get<fhicl::ParameterSet>("CalibrationParsNoSCE")),
+  fCalorimetryTag(p.get<std::string>("CalorimetryTag")),
+
+  fCalibration(p.get<fhicl::ParameterSet>("CalibrationParsSCE")),
 
   fPIDFilename(p.get<std::string>("PIDFilename")),
 
@@ -208,7 +207,8 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
 
   fDebug(p.get<bool>("Debug")),
 
-  fWasteTime(p.get<bool>("WasteTime")){
+  fWasteTime(p.get<bool>("WasteTime")),
+  fNLoopWT(p.get<int>("NLoopWT")){
 
   fPIDFile = TFile::Open(fPIDFilename.c_str());
   PIDProfiles[211]  = (TProfile*)fPIDFile->Get("dedx_range_pi" );
@@ -224,14 +224,18 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   //create a spill for each event and fill event info
   AnaSpillPD* spill = MakeSpill();
   spill->EventInfo = MakeEventInfo();
-  
-  AnaEventInfo& info = *static_cast<AnaEventInfo*>(spill->EventInfo);
+ 
+  AnaEventInfoPD& info = *static_cast<AnaEventInfoPD*>(spill->EventInfo);
   info.Run    = evt.run();
   info.SubRun = evt.subRun();
   info.Event  = evt.id().event();
   info.IsMC   = !evt.isRealData();
+  info.NominalBeamMom = fNominalBeamMom;
 
-  if(fDebug)std::cout << "Run " << info.Run << ", event " << info.Event << ", MC = " << info.IsMC << std::endl;
+  if(fDebug){
+    std::cout << "Run " << info.Run << ", event " << info.Event << ", MC = " << info.IsMC;
+    std::cout << ", Beam Mom = " << info.NominalBeamMom << std::endl;
+  }
 
   //data quality and check
   spill->DataQuality = MakeDataQuality();
@@ -249,7 +253,7 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
       return;
     }
     //get cosmics if desired
-    //for the moment cosmics are only retrieved if the beam true info has been succesfully stored
+    //for the moment cosmics are only retrieved if the beam true info has been succesfully stored TODO make this independent
     if(fCosmics)FillCosmicsTrueInfo(evt, spill->TrueParticles);
   }
   
@@ -349,7 +353,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
   truePart->ID       = ls_truePart->TrackId();
   truePart->ParentID = ls_truePart->Mother();
   truePart->Origin   = piServ->TrackIdToMCTruth_P(ls_truePart->TrackId())->Origin();
-  if(truePart->Origin==0 && parent)truePart->Origin = parent->Origin;
+  if(truePart->Origin==0 && parent)truePart->Origin = parent->Origin; //if unknown origin, assign parent origin
 
   truePart->PDG                  = ls_truePart->PdgCode();
   if(parent)truePart->ParentPDG  = parent->PDG;
@@ -392,7 +396,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
     //fill daughters ID vector
     truePart->Daughters.push_back(ls_truePart->Daughter(idau));
     //fill daughter info recursively if desired
-    if(recursive){
+    if(recursive){//we may want to fill the true info of a particle and not its daughters (e.g. missmatched cosmic particle)
       //get the daughter
       auto const ls_trueDau = pList[ls_truePart->Daughter(idau)];
       //skip delta rays
@@ -414,8 +418,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBeamInfo(art::Event const &ev
   //get vector of beam events, but use just the first one
   //some criteria is needed if more than 1 beam event is found
   std::string beamtag;
-  if(evt.isRealData())beamtag = fBeamModuleLabel;
-  else beamtag = fGeneratorTag;
+  if(evt.isRealData())beamtag = fBeamModuleLabel; // for data
+  else beamtag = fGeneratorTag;                   // MC
   auto beamHandle = evt.getValidHandle<std::vector<beam::ProtoDUNEBeamEvent>>(beamtag);
   std::vector<art::Ptr<beam::ProtoDUNEBeamEvent>> beamVec;
 
@@ -500,7 +504,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
   if(fDebug)std::cout << "Filling particle info recursively" << std::endl;
   FillParticleInfo(evt, pfpVec, ls_primaryPart, trueParticles, bunch, generation, BeamOrigin, isPandora);
 
-  // adcs for CNN input
+  // adcs for CNN input ANSELMO STUFF
 
   /*std::vector<std::vector<float> > reduced_adc_cnn_map;
   std::vector<Int_t> reduced_adc_cnn_map_wires;
@@ -615,25 +619,34 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   for(int iplane = 0; iplane < 3; iplane++)part->Hits[iplane].clear();
 
   //get calo information
-  std::vector<anab::Calorimetry> SCEcalo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagSCE);
-  std::vector<anab::Calorimetry> NoSCEcalo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagNoSCE);
+  std::vector<anab::Calorimetry> calo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTag);
 
   //safety check
-  if(SCEcalo.empty() || NoSCEcalo.empty()) return;
+  if(calo.empty())return;
 
+  //get collection plane index (it changes within productions and data/MC)
+  int plane_index = -1;
+  for(int i = 0; i < (int)calo.size(); i++){
+    if(calo[i].PlaneID().Plane == 2){
+      plane_index = i;
+      break;
+    }
+  }
+
+  //TODO: check if this is needed? for some reason it was commented
   //get corrected SCE positions and directions of the track
-  if(!SCEcalo[2].XYZ().empty()){
-    part->PositionStartSCE[0] = SCEcalo[2].XYZ()[0].X();
-    part->PositionStartSCE[1] = SCEcalo[2].XYZ()[0].Y();
-    part->PositionStartSCE[2] = SCEcalo[2].XYZ()[0].Z();
+  if(!calo[plane_index].XYZ().empty()){
+    part->PositionStartSCE[0] = calo[plane_index].XYZ()[0].X();
+    part->PositionStartSCE[1] = calo[plane_index].XYZ()[0].Y();
+    part->PositionStartSCE[2] = calo[plane_index].XYZ()[0].Z();
     
-    part->PositionEndSCE[0] = SCEcalo[2].XYZ().back().X();
-    part->PositionEndSCE[1] = SCEcalo[2].XYZ().back().Y();
-    part->PositionEndSCE[2] = SCEcalo[2].XYZ().back().Z();
+    part->PositionEndSCE[0] = calo[plane_index].XYZ().back().X();
+    part->PositionEndSCE[1] = calo[plane_index].XYZ().back().Y();
+    part->PositionEndSCE[2] = calo[plane_index].XYZ().back().Z();
     
-    TVector3 dir((SCEcalo[2].XYZ().back().X() - SCEcalo[2].XYZ()[0].X()),
-		 (SCEcalo[2].XYZ().back().Y() - SCEcalo[2].XYZ()[0].Y()),
-		 (SCEcalo[2].XYZ().back().Z() - SCEcalo[2].XYZ()[0].Z()));
+    TVector3 dir((calo[plane_index].XYZ().back().X() - calo[plane_index].XYZ()[0].X()),
+		 (calo[plane_index].XYZ().back().Y() - calo[plane_index].XYZ()[0].Y()),
+		 (calo[plane_index].XYZ().back().Z() - calo[plane_index].XYZ()[0].Z()));
     
     part->DirectionStartSCE[0] = part->DirectionEndSCE[0] = dir.Unit().X();
     part->DirectionStartSCE[1] = part->DirectionEndSCE[1] = dir.Unit().Y();
@@ -644,41 +657,52 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   auto allHits = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
   std::vector<art::Ptr<recob::Hit>> hit_vector;
   art::fill_ptr_vector(hit_vector, allHits);
-  //get calibrated dEdx
-  std::vector<float> dEdx_SCE_cal = calibrationSCE.GetCalibratedCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagSCE, 2, -1.);
 
-  //for hit CNN
-  anab::MVAReader<recob::Hit,4> mvaReader(evt, "emtrkmichelid:emtrkmichel");
-
-  //number of hits
-  part->NHitsPerPlane[2] = SCEcalo[2].dQdx().size();
-
-  //dummy variables for chi2prot calculation
-  std::vector<double> dEdx, ResidualRange;
+  //check if this is still needed (I think it isn't)
+  //get calibrated dEdx if needed
+  std::vector<double> dEdx;
+  std::vector<double> ResRange;
   dEdx.clear();
-  ResidualRange.clear();
+  ResRange.clear();
+  /*if(calo_fullcali.empty()){
+    auto calo_SCE_elife_fullcali = fCalibration.GetCalibratedCalorimetryMigue(*track, evt, fTrackerTag, fCalorimetryTag_SCE_elife, 2, -1.);
+    dEdx = calo_SCE_elife_fullcali.first;
+    ResRange = calo_SCE_elife_fullcali.second;
+    }*/
+    
+  //number of hits
+  if(evt.isRealData())part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
+  else                part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
 
-  //loop over hits. Index 2 == recollection plane 2
-  for(int ihit = 0; ihit < (int)SCEcalo[2].dQdx().size(); ihit++){
+  //fil hit info
+  for(int ihit = 0; ihit < (int)calo[plane_index].dQdx().size(); ihit++){
     //create a highland hit and a LArSoft hit
     AnaHitPD hit;
-    const recob::Hit & ls_hit = (*allHits)[SCEcalo[2].TpIndices().at(ihit)];
-
+    const recob::Hit & ls_hit = (*allHits)[calo[plane_index].TpIndices().at(ihit)];
+    
     //fill calo info
-    if(ihit < (int)NoSCEcalo[2].dQdx().size()) hit.dQdx_NoSCE = NoSCEcalo[2].dQdx().at(ihit);
-    hit.dQdx       = SCEcalo[2].dQdx().at(ihit);
-
-    hit.dEdx       = SCEcalo[2].dEdx().at(ihit);
-
-    hit.ResidualRange = SCEcalo[2].ResidualRange().at(ihit);
-    ResidualRange.push_back(SCEcalo[2].ResidualRange().at(ihit));
-
-    if(ihit < (int)dEdx_SCE_cal.size()){
-      hit.dEdx_calib = dEdx_SCE_cal.at(ihit);
-      dEdx.push_back(dEdx_SCE_cal.at(ihit));
+    hit.dQdx          = calo[plane_index].dQdx().at(ihit);
+    hit.dEdx          = calo[plane_index].dEdx().at(ihit);
+    hit.ResidualRange = calo[plane_index].ResidualRange().at(ihit);
+    dEdx.push_back(calo[plane_index].dEdx().at(ihit));
+    ResRange.push_back(calo[plane_index].ResidualRange().at(ihit));
+    
+    /*if(fCalorimetryTag_SCE=="pandoracali"){
+      hit.dEdx_calib = calo_SCE[plane_index_SCE].dEdx().at(ihit);
+      dEdx.push_back(calo_SCE[plane_index_SCE].dEdx().at(ihit));
+      hit.ResidualRange = calo_SCE[plane_index_SCE].ResidualRange().at(ihit);
+      ResRange.push_back(calo_SCE[plane_index_SCE].ResidualRange().at(ihit));
     }
+    else{
+      if(ihit < (int)dEdx.size()){
+	hit.dEdx_calib = dEdx.at(ihit);
+	hit.ResidualRange = ResRange.at(ihit);
+      }
+      }*/
 
-    hit.Position.SetXYZ(SCEcalo[2].XYZ().at(ihit).X(), SCEcalo[2].XYZ().at(ihit).Y(), SCEcalo[2].XYZ().at(ihit).Z());
+    std::cout << hit.dEdx << " " << hit.ResidualRange << std::endl;
+
+    hit.Position.SetXYZ(calo[plane_index].XYZ().at(ihit).X(), calo[plane_index].XYZ().at(ihit).Y(), calo[plane_index].XYZ().at(ihit).Z());
 
     //fill hit info
     hit.Integral = ls_hit.Integral();
@@ -694,30 +718,16 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     hit.WireID.Plane = 2; //the only one we are saving for the moment
     hit.WireID.Wire  = ls_hit.WireID().Wire;
 
-    //get CNN score of each hit
-    std::array<float,4> cnn_out = mvaReader.getOutput(hit_vector[ihit]);
-    hit.CNN[0] = cnn_out[mvaReader.getIndex("track")];
-    hit.CNN[1] = cnn_out[mvaReader.getIndex("em")];
-    hit.CNN[2] = cnn_out[mvaReader.getIndex("michel")];
-    
     //add it to the vector of hits
     part->Hits[2].push_back(hit);
   }
 
   //get PID
-  std::pair<double,int> proton_PID = trackUtil.Chi2PID(dEdx,ResidualRange,PIDProfiles[2212]);
-  std::pair<double,int> muon_PID   = trackUtil.Chi2PID(dEdx,ResidualRange,PIDProfiles[13]  );
+  std::pair<double,int> proton_PID = trackUtil.Chi2PID(dEdx,ResRange,PIDProfiles[2212]);
+  std::pair<double,int> muon_PID   = trackUtil.Chi2PID(dEdx,ResRange,PIDProfiles[13]  );
   part->Chi2Proton = proton_PID.first;
   part->Chi2Muon   = muon_PID.first;
   part->Chi2ndf    = proton_PID.second;
-
-  //get vertex michel score
-  std::pair<double, int> vtx_michelscore = trackUtil.GetVertexMichelScoreMiguel(*track, evt, fTrackerTag, fHitTag);
-  part->vtx_CNN_michelscore = vtx_michelscore.first;
-  part->vtx_CNN_NHits       = vtx_michelscore.second;
-
-  //compute truncated mean
-  part->truncLibo_dEdx = pdAnaUtils::ComputeTruncatedMean(0.16,0.16,part->Hits[2]);
 }
 
 //*****************************************************************************
@@ -737,6 +747,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillShowerInfo(const recob::Showe
   
   part->Length = shower->Length();
 
+  //probably there are many other variables to add here but I don't need them for kaon analysis.
+  //they will be added as needed/requested
 }
 
 //*****************************************************************************
@@ -1007,23 +1019,10 @@ void highlandAnalysis::CreateHighlandMiniTree::WasteTime(){
   std::cout << "as my module is too optimized, I need to increase the CPU time so I don't get low efficiency warnings :(" << std::endl;
   int x = 0;
   
-  /*for(int i = 0; i < (int)trueParticles.size(); i++){
-    for(int j = 0; j < (int)trueParticles.size(); j++){
-      for(int k = 0; k < (int)trueParticles.size(); k++){
-	for(int l = 0; l < 2; l++){
-	  x = x + pow(-1,i+j+k+l);
-	  //      std::cout << x << std::endl;
-	}
-      }
-    } 
-    }*/
-
-  const int N = 250;
-
-  for(int i = 0; i < N; i++){
-    for(int j = 0; j < N; j++){
-      for(int k = 0; k < N; k++){
-	for(int l = 0; l < N; l++){
+  for(int i = 0; i < fNLoopWT; i++){
+    for(int j = 0; j < fNLoopWT; j++){
+      for(int k = 0; k < fNLoopWT; k++){
+	for(int l = 0; l < fNLoopWT; l++){
 	  x = x + pow(-1,i+j+k+l);
 	}
       }
