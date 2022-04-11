@@ -23,13 +23,13 @@
 //framework includes
 #include "art_root_io/TFileService.h"
 
-#include "dune/DuneObj/ProtoDUNEBeamEvent.h"
-#include "protoduneana/protoduneana/Utilities/ProtoDUNETrackUtils.h"
-#include "protoduneana/protoduneana/Utilities/ProtoDUNEShowerUtils.h"
-#include "protoduneana/protoduneana/Utilities/ProtoDUNETruthUtils.h"
-#include "protoduneana/protoduneana/Utilities/ProtoDUNEPFParticleUtils.h"
-#include "dune/Protodune/singlephase/DataUtils/ProtoDUNEDataUtils.h"
-#include "protoduneana/protoduneana/Utilities/ProtoDUNEBeamlineUtils.h"
+#include "dunecore/DuneObj/ProtoDUNEBeamEvent.h"
+#include "protoduneana/Utilities/ProtoDUNETrackUtils.h"
+#include "protoduneana/Utilities/ProtoDUNEShowerUtils.h"
+#include "protoduneana/Utilities/ProtoDUNETruthUtils.h"
+#include "protoduneana/Utilities/ProtoDUNEPFParticleUtils.h"
+//#include "dune/Protodune/singlephase/DataUtils/ProtoDUNEDataUtils.h"
+#include "protoduneana/Utilities/ProtoDUNEBeamlineUtils.h"
 #include "protoduneana/Utilities/ProtoDUNEBeamCuts.h"
 #include "larsim/MCCheater/ParticleInventoryService.h"
 #include "lardata/DetectorInfoServices/DetectorPropertiesService.h"
@@ -126,14 +126,7 @@ public:
   
   void WasteTime();
 
-  //Anselmo stuff
-  void collect_adc_for_CNN(const art::Event & evt, const recob::PFParticle* particle, const std::vector<recob::PFParticle>& pfpVec, 
-			   protoana::ProtoDUNEPFParticleUtils & pfpUtil,const std::string& fPFParticleTag,
-			   std::vector<std::vector<float> >& reduced_adc_cnn_map,
-			   std::vector<Int_t>& reduced_adc_cnn_map_wires,
-			   std::vector<Int_t>& reduced_adc_cnn_map_times);
-
-
+  
 private:
 
   TTree* fTree;
@@ -153,8 +146,6 @@ private:
   std::string fHitTag;
 
   std::string fCalorimetryTag;
-
-  protoana::ProtoDUNECalibration fCalibration;
 
   std::string fPIDFilename;
   TFile *     fPIDFile;
@@ -193,8 +184,6 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fHitTag(p.get<std::string>("HitTag")),
 
   fCalorimetryTag(p.get<std::string>("CalorimetryTag")),
-
-  fCalibration(p.get<fhicl::ParameterSet>("CalibrationParsSCE")),
 
   fPIDFilename(p.get<std::string>("PIDFilename")),
 
@@ -503,29 +492,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
   
   if(fDebug)std::cout << "Filling particle info recursively" << std::endl;
   FillParticleInfo(evt, pfpVec, ls_primaryPart, trueParticles, bunch, generation, BeamOrigin, isPandora);
-
-  // adcs for CNN input ANSELMO STUFF
-
-  /*std::vector<std::vector<float> > reduced_adc_cnn_map;
-  std::vector<Int_t> reduced_adc_cnn_map_wires;
-  std::vector<Int_t> reduced_adc_cnn_map_times;
-
-  collect_adc_for_CNN(evt,ls_primaryPart,*pfpVec, pfpUtil, fPFParticleTag,reduced_adc_cnn_map, reduced_adc_cnn_map_wires, reduced_adc_cnn_map_times);
-
-  for (size_t wi=0;wi<reduced_adc_cnn_map_wires.size();wi++){
-    Int_t wire = reduced_adc_cnn_map_wires[wi];
-    Int_t t0   = reduced_adc_cnn_map_times[wi];
-    AnaWireCNN cnnwire;
-    cnnwire.wire = wire;
-    cnnwire.time = t0;
-    for (size_t s=0;s<reduced_adc_cnn_map[wi].size();s++){
-      //      Int_t time = t0+s;
-      cnnwire.adcs.push_back(reduced_adc_cnn_map[wi][s]);
-      //      std::cout << wire << " " << t0 << " " << time << std::endl;
-      //      spill->ADC[wire][time]=reduced_adc_cnn_map[wi][s];
-    }
-    static_cast<AnaBunchPD*>(bunch)->CNNwires.push_back(cnnwire);
-    }*/
 }
 
 
@@ -552,7 +518,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   part->ParentID = ls_part->Parent();
   
   part->Generation = generation;
-  
+
   //get number of hits of the PFP regardless track or shower
   const std::vector<art::Ptr<recob::Hit>> ls_part_hits = pfpUtil.GetPFParticleHits_Ptrs(*ls_part, evt, fPFParticleTag);
   part->NHits = ls_part_hits.size();
@@ -632,8 +598,11 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
       break;
     }
   }
+  if(plane_index==-1){
+    if(fDebug)std::cout << "No collection plane founde" << std::endl;
+    return;
+  }
 
-  //TODO: check if this is needed? for some reason it was commented
   //get corrected SCE positions and directions of the track
   if(!calo[plane_index].XYZ().empty()){
     part->PositionStartSCE[0] = calo[plane_index].XYZ()[0].X();
@@ -657,28 +626,21 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   auto allHits = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
   std::vector<art::Ptr<recob::Hit>> hit_vector;
   art::fill_ptr_vector(hit_vector, allHits);
-
-  //check if this is still needed (I think it isn't)
-  //get calibrated dEdx if needed
-  std::vector<double> dEdx;
-  std::vector<double> ResRange;
-  dEdx.clear();
-  ResRange.clear();
-  /*if(calo_fullcali.empty()){
-    auto calo_SCE_elife_fullcali = fCalibration.GetCalibratedCalorimetryMigue(*track, evt, fTrackerTag, fCalorimetryTag_SCE_elife, 2, -1.);
-    dEdx = calo_SCE_elife_fullcali.first;
-    ResRange = calo_SCE_elife_fullcali.second;
-    }*/
     
   //number of hits
   if(evt.isRealData())part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
   else                part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
 
+  //for chi2 calculation
+  std::vector<double> dEdx;
+  std::vector<double> ResRange;
+  dEdx.clear();
+  ResRange.clear();
+
   //fil hit info
   for(int ihit = 0; ihit < (int)calo[plane_index].dQdx().size(); ihit++){
-    //create a highland hit and a LArSoft hit
+    //create a highland hit 
     AnaHitPD hit;
-    const recob::Hit & ls_hit = (*allHits)[calo[plane_index].TpIndices().at(ihit)];
     
     //fill calo info
     hit.dQdx          = calo[plane_index].dQdx().at(ihit);
@@ -687,36 +649,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     dEdx.push_back(calo[plane_index].dEdx().at(ihit));
     ResRange.push_back(calo[plane_index].ResidualRange().at(ihit));
     
-    /*if(fCalorimetryTag_SCE=="pandoracali"){
-      hit.dEdx_calib = calo_SCE[plane_index_SCE].dEdx().at(ihit);
-      dEdx.push_back(calo_SCE[plane_index_SCE].dEdx().at(ihit));
-      hit.ResidualRange = calo_SCE[plane_index_SCE].ResidualRange().at(ihit);
-      ResRange.push_back(calo_SCE[plane_index_SCE].ResidualRange().at(ihit));
-    }
-    else{
-      if(ihit < (int)dEdx.size()){
-	hit.dEdx_calib = dEdx.at(ihit);
-	hit.ResidualRange = ResRange.at(ihit);
-      }
-      }*/
-
-    std::cout << hit.dEdx << " " << hit.ResidualRange << std::endl;
-
     hit.Position.SetXYZ(calo[plane_index].XYZ().at(ihit).X(), calo[plane_index].XYZ().at(ihit).Y(), calo[plane_index].XYZ().at(ihit).Z());
-
-    //fill hit info
-    hit.Integral = ls_hit.Integral();
-    hit.PeakTime = ls_hit.PeakTime();
-    hit.PeakAmplitude = ls_hit.PeakAmplitude();
-
-    hit.StartTick = ls_hit.StartTick();
-    hit.EndTick = ls_hit.EndTick();
-
-    hit.Channel = ls_hit.Channel();
-    hit.View = ls_hit.View();
-
-    hit.WireID.Plane = 2; //the only one we are saving for the moment
-    hit.WireID.Wire  = ls_hit.WireID().Wire;
 
     //add it to the vector of hits
     part->Hits[2].push_back(hit);
@@ -1016,7 +949,7 @@ void highlandAnalysis::CreateHighlandMiniTree::reset(){
 void highlandAnalysis::CreateHighlandMiniTree::WasteTime(){
 //*****************************************************************************
   
-  std::cout << "as my module is too optimized, I need to increase the CPU time so I don't get low efficiency warnings :(" << std::endl;
+  std::cout << "as my module runs too fast compared with the amount of time it takes to open rootfiles, I need to increase the CPU time so I don't get low efficiency warnings :(" << std::endl;
   int x = 0;
   
   for(int i = 0; i < fNLoopWT; i++){
@@ -1030,218 +963,5 @@ void highlandAnalysis::CreateHighlandMiniTree::WasteTime(){
   }
   std::cout << "the result of this amazing waste of time is " << x << std::endl;
 }
-
-//*****************************************************************************
-void highlandAnalysis::CreateHighlandMiniTree::collect_adc_for_CNN(const art::Event & evt, const recob::PFParticle* particle, const std::vector<recob::PFParticle>& pfpVec, 
-								   protoana::ProtoDUNEPFParticleUtils & pfpUtil,const std::string& fPFParticleTag,
-								   std::vector<std::vector<float> >& reduced_adc_cnn_map,
-								   std::vector<Int_t>& reduced_adc_cnn_map_wires,
-								   std::vector<Int_t>& reduced_adc_cnn_map_times){
-  //*****************************************************************************
-
-   bool debug=false;
-
-   //  art::InputTag fWireProducerLabel = "wclsdatanfsp:gauss";
-  art::InputTag fWireProducerLabel = "wclsdatasp:gauss";
-  auto wireHandle = evt.getValidHandle< std::vector<recob::Wire> >(fWireProducerLabel);
-  //  auto const& wires = evt.getValidHandle<std::vector<recob::Wire> >("wclsdatanfsp:gauss");
-  //  size_t nTotalWires = wires->size();
-  //  if (debug) std::cout << "#wires = " << nTotalWires << std::endl;
-  if (!wireHandle) return;
-
-  size_t nTotalWires = wireHandle->size();
-  if (debug) std::cout << "#wires = " << nTotalWires << std::endl;
-  /*
-  for (size_t i=0;i<wireHandle->size();i++){
-    if (debug) std::cout << i << " " << (*wireHandle)[i].Channel()  << " " << (*wireHandle)[i].View() << " " << (*wireHandle)[i].Signal().size() << std::endl;
-    if (i==0)
-      for (size_t j=0;j<(*wireHandle)[i].Signal().size(); j++)
-	if (debug) std::cout << j << " " <<  (*wireHandle)[i].Signal()[j] << std::endl;
-
-    std::vector<geo::WireID> wireIDs = geom->ChannelToWire((*wireHandle)[i].Channel());  
-    if (debug) std::cout << "#  wireIDs = " << wireIDs.size() << std::endl;
-    for (auto const& id : wireIDs) {
-      if (debug) std::cout << "    - " << id.Cryostat << " " << id.TPC << " " << id.Plane << " " << id.Wire << std::endl;
-    }
-  }
-  */
-
-
-  std::vector<std::vector<std::vector<float> > > adc_cnn_map;
-    std::vector<Float_t> adc_cnn; // anselmo
-    adc_cnn_map.resize(nTotalWires);
-    std::vector<bool> adc_cnn_map_wire_filled(nTotalWires,false);
-    for (size_t i=0;i<nTotalWires;i++) adc_cnn_map[i].clear();
-
-    std::vector<int> adc_cnn_map_tmin(nTotalWires,1000000);
-    std::vector<int> adc_cnn_map_tmax(nTotalWires,-1000000);
-
-    std::vector<size_t> particleIDs;
-
-    particleIDs.push_back(particle->Self());
-    // loop over beam particle daughter ID's
-    for( size_t daughterID : particle->Daughters() ){
-      particleIDs.push_back(daughterID);
-    }
-
-    for( size_t pID : particleIDs ){
-      // get the particle with that ID
-      const recob::PFParticle * partPFP = &(pfpVec.at( pID ));
-
-      // get the hits for that particle
-      const std::vector< art::Ptr< recob::Hit > > partPFP_hits = pfpUtil.GetPFParticleHits_Ptrs( *partPFP, evt, fPFParticleTag );
-     
-      if (debug) std::cout << "anselmo: hits in particle. #hits = " << partPFP_hits.size() << std::endl;
-      
-      // loop over hits in particle
-      for (size_t i = 0; i < partPFP_hits.size(); ++i) {
-
-	// use only the collection plane
-        if (partPFP_hits[i]->View() != 2) continue;
-
-	// wire ID for that hit
-	const geo::WireID& id = partPFP_hits[i]->WireID();
-	
-	// channel number for that hit
-	size_t wh=partPFP_hits[i]->Channel();
-
-	if (debug) std::cout << "    - Hit: " << i << " " << " " << wh << " " << (*wireHandle)[wh].Signal().size() 
-		  << " " << partPFP_hits[i]->StartTick() << "-" << partPFP_hits[i]->EndTick()
-		  << " " << id.Cryostat << " " << id.TPC << " " << id.Plane << " " << id.Wire << std::endl;
-	
-	
-	size_t nadc_hit=0;
-	
-	// start and end time for the hit waveform 
-	int t0 = partPFP_hits[i]->StartTick();
-	int t1 = partPFP_hits[i]->EndTick();
-	
-	// compute the maximum and minimum times for that channel
-	if (t0<adc_cnn_map_tmin[wh]) adc_cnn_map_tmin[wh]=t0;
-	if (t1>adc_cnn_map_tmax[wh]) adc_cnn_map_tmax[wh]=t1;
-		
-	//  create an entry in the map when the channel is not yet filled
-	if (adc_cnn_map[wh].empty()){
-	  adc_cnn_map[wh].resize(6000);
-	  for (size_t t=0;t<6000;t++) adc_cnn_map[wh][t].clear();
-	}
-	
-	// create a waveform starting at t0
-	if (adc_cnn_map[wh][t0].empty()){
-	  for (int t=partPFP_hits[i]->StartTick();t<=partPFP_hits[i]->EndTick();t++){
-	    //	      if (debug) std::cout << "    - " << t << " " << (*wireHandle)[wh].Signal()[t] << std::endl; 
-	    // tis is just for crosschecks. In principle all values should be above 0
-	    if ((*wireHandle)[wh].Signal()[t]>0){ 
-	      adc_cnn.push_back((*wireHandle)[wh].Signal()[t]);
-	    }
-	    // fill the map for that channel and t0
-	    adc_cnn_map[wh][t0].push_back((*wireHandle)[wh].Signal()[t]);
-	    adc_cnn_map_wire_filled[wh]= true;
-	    nadc_hit++;
-	  }
-	}
-	
-	// loop over a range of wires in both sides of the nominal wire
-	for (size_t w=wh-44/2;w<wh+44/2;w++){
-	  // Create an entry for that wire (only when it has not been created previously)
-	  if (adc_cnn_map[w].empty()){
-	    adc_cnn_map[w].resize(6000);
-	    for (size_t t=0;t<6000;t++) adc_cnn_map[w][t].clear();
-	    adc_cnn_map_wire_filled[w]=false;
-	  }
-	  
-	  if (t0<adc_cnn_map_tmin[w]) adc_cnn_map_tmin[w]=t0;
-	  if (t1>adc_cnn_map_tmax[w]) adc_cnn_map_tmax[w]=t1;
-	}
-	if (debug) std::cout << "        ---> " << nadc_hit << " adcs for this hit" << std::endl;
-      }  // end loop over hits
-    }  // end loop over particless
-
-    // add samples with time 288/2 below and above the minimum and maximum times for each wire   
-    size_t nadc_samples=0;
-
-    if (debug) std::cout << "anselmo: find adcs in window" << std::endl;
-
-    // loop over all wires
-    for (size_t w=0;w<nTotalWires;w++){
-      // but used only the ones in the window for any of the hits 
-      if (adc_cnn_map[w].empty()) continue;
-
-      // Search for pulses starting at t0-288/2
-      int t0=adc_cnn_map_tmin[w]-288/2;
-      if (t0<0) t0=0;
-      if (debug) std::cout << " wire, t0 " << w << " " << t0 << std::endl; 
-      size_t nadc_samples_t0=0;
-      bool t0_found=false;
-      for (int t=adc_cnn_map_tmin[w]-288/2;t<adc_cnn_map_tmax[w]+288/2;t++){
-
-	if (t>=adc_cnn_map_tmin[w] && t<=adc_cnn_map_tmax[w] && adc_cnn_map_wire_filled[w]){
-	  // added preeviously to the map. Just count
-	  nadc_samples += adc_cnn_map[w][t].size();
-	  continue ;
-	}
-	// a new pulse is found when there is a signal over 0 after an empty block
-	if ((*wireHandle)[w].Signal()[t]>0){
-	  if (!t0_found && adc_cnn_map[w][t].empty()){  // make sure this pulse was not previously added
-	    t0=t;
-	    t0_found=true;
-	    if (debug) std::cout << "    new t0 " << t0 << std::endl; 
-	  }
-	  //	  if (debug) std::cout << "        - " << t << " " << (*wireHandle)[w].Signal()[t] << std::endl; 
-	  // add all elements to the pulse/waveform
-	  adc_cnn_map[w][t0].push_back((*wireHandle)[w].Signal()[t]);
-	  nadc_samples++;
-	  nadc_samples_t0++;
-	}
-	else{
-	  if (t0_found) if (debug) std::cout << "        --> #samples for this t0 = " << nadc_samples_t0 << std::endl;
-	  nadc_samples_t0=0;
-	  t0_found=false;
-	}
-      }
-      
-    }
-    
-
-    int adc_values=0, adc_values_gt0=0;
-    std::vector<float> reduced_adc_cnn_map_waveform;
-
-    if (debug) std::cout << "####################### adc values from particles: " << std::endl;
-    for (size_t w=0;w<nTotalWires;w++){
-      if (adc_cnn_map[w].empty()) continue;
-      for (size_t t=0;t<adc_cnn_map[w].size();t++){
-	if (adc_cnn_map[w][t].empty()) continue;
-	reduced_adc_cnn_map_waveform.clear();
-	for (size_t s=0;s<adc_cnn_map[w][t].size();s++){
-	  //	  if (adc_cnn_map[w][t][s]>0)
-	    if (debug) std::cout << w << " " << t << " " << s << " " <<adc_cnn_map[w][t][s]  << std::endl;
-	    if (adc_cnn_map[w][t][s]>0) adc_values_gt0++;
-	    adc_values++;
-	    reduced_adc_cnn_map_waveform.push_back(adc_cnn_map[w][t][s]);
-	}
-	reduced_adc_cnn_map.push_back(reduced_adc_cnn_map_waveform);
-	reduced_adc_cnn_map_wires.push_back(w);
-	reduced_adc_cnn_map_times.push_back(t);
-      }
-    }
-
-    if (debug) std::cout << "####################### adc values from particles = " 
-	      << adc_cnn.size() << " " 
-	      << nadc_samples   << " " 
-	      << adc_values     << " " 
-	      << adc_values_gt0 << std::endl;
-
-    if (debug) std::cout << "####################### reduced adc map ################ " << std::endl;
-    for (size_t w=0;w<reduced_adc_cnn_map_wires.size();w++){
-      if (debug) std::cout << w << " " << reduced_adc_cnn_map_wires[w] << " " << reduced_adc_cnn_map_times[w] << " \t--> ";
-      for (size_t s=0;s<reduced_adc_cnn_map[w].size();s++){
-	if (debug) std::cout << reduced_adc_cnn_map[w][s] << " ";
-      }
-      if (debug) std::cout << std::endl;
-    }
-
-    
-}
-
 
 DEFINE_ART_MODULE(highlandAnalysis::CreateHighlandMiniTree)
