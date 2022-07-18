@@ -1,0 +1,27 @@
+#include "trackfinderalgorithms.fcl"
+#include "ProtoDUNEBeamlineUtils.fcl"
+#include "ProtoDUNECalibration.fcl"
+#include "ProtoDUNEEmptyEventFinder.fcl"
+
+BEGIN_PROLOG
+
+highlandAnalysis:
+{
+  module_type:		"BeamPartIDEff"
+
+  BeamModuleLabel:	"beamevent"
+  BeamlineUtils:        @local::standard_protodunebeamlineutils
+  EmptyEventFinder:     @local::standard_protoduneemptyeventfinder
+  
+  PFParticleTag:        "pandora"
+  GeneratorTag:         "generator"
+  CosmicGeneratorTag:   "cosmicgenerator"
+  TrackerTag:           "pandoraTrack"
+  ShowerTag:            "pandoraShower"
+  CalorimetryTag:       "pandoracali"
+  HitTag:               "hitpdune"
+
+  NominalBeamMom:	1.0	
+}
+
+END_PROLOG
