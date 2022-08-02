@@ -17,6 +17,7 @@ highlandAnalysis:
   TrackerTag:           "pandoraTrack"
   ShowerTag:            "pandoraShower"
   CalorimetryTag:       "pandoracali"
+  CalorimetryTagNoSCE:  "pandoracalinoxyzt"	
   HitTag:               "hitpdune"
   
   #CalibrationParsSCE:   @local::CalorimetryParameters_SPProd2_MC_SCE

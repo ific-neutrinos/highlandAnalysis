@@ -28,7 +28,6 @@
 #include "protoduneana/Utilities/ProtoDUNEShowerUtils.h"
 #include "protoduneana/Utilities/ProtoDUNETruthUtils.h"
 #include "protoduneana/Utilities/ProtoDUNEPFParticleUtils.h"
-//#include "dune/Protodune/singlephase/DataUtils/ProtoDUNEDataUtils.h"
 #include "protoduneana/Utilities/ProtoDUNEBeamlineUtils.h"
 #include "protoduneana/Utilities/ProtoDUNEBeamCuts.h"
 #include "larsim/MCCheater/ParticleInventoryService.h"
@@ -37,13 +36,14 @@
 #include "lardataobj/RecoBase/Wire.h"
 #include "protoduneana/Utilities/ProtoDUNECalibration.h"
 
+#include "larevt/SpaceCharge/SpaceCharge.h"
+#include "larevt/SpaceChargeServices/SpaceChargeService.h"
 
 //root includes
 #include "TTree.h"
 #include "TVector3.h"
 #include "TProfile.h"
 #include "TFile.h"
-
 
 //highland includes
 #include "pdDataClasses.hxx"
@@ -146,6 +146,7 @@ private:
   std::string fHitTag;
 
   std::string fCalorimetryTag;
+  std::string fCalorimetryTagNoSCE;
 
   std::string fPIDFilename;
   TFile *     fPIDFile;
@@ -184,6 +185,7 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fHitTag(p.get<std::string>("HitTag")),
 
   fCalorimetryTag(p.get<std::string>("CalorimetryTag")),
+  fCalorimetryTagNoSCE(p.get<std::string>("CalorimetryTagNoSCE")),
 
   fPIDFilename(p.get<std::string>("PIDFilename")),
 
@@ -586,22 +588,32 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
 
   //get calo information
   std::vector<anab::Calorimetry> calo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTag);
+  std::vector<anab::Calorimetry> calonosce = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagNoSCE);
 
   //safety check
-  if(calo.empty())return;
+  if(calo.empty() || calonosce.empty())return;
 
   //get collection plane index (it changes within productions and data/MC)
   int plane_index = -1;
+  int plane_index_nosce = -1;
   for(int i = 0; i < (int)calo.size(); i++){
     if(calo[i].PlaneID().Plane == 2){
       plane_index = i;
       break;
     }
   }
-  if(plane_index==-1){
+  for(int i = 0; i < (int)calonosce.size(); i++){
+    if(calonosce[i].PlaneID().Plane == 2){
+      plane_index_nosce = i;
+      break;
+    }
+  }
+  if(plane_index==-1 || plane_index_nosce==-1){
     if(fDebug)std::cout << "No collection plane founde" << std::endl;
     return;
   }
+
+  std::cout << "MIGUEEEEEEEEE " << plane_index << " " << plane_index_nosce << " " << calo[plane_index].dQdx().size() << " " << calonosce[plane_index_nosce].dQdx().size() << calo[plane_index].dEdx().size() << " " << calonosce[plane_index_nosce].dEdx().size() << std::endl;
 
   //get corrected SCE positions and directions of the track
   if(!calo[plane_index].XYZ().empty()){
@@ -637,6 +649,10 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   dEdx.clear();
   ResRange.clear();
 
+  //auto const* sce = lar::providerFrom<spacecharge::SpaceChargeService>();
+  //sce->EnableCalEfieldSCE();
+  //geo::Vector_t posOffset = {0., 0., 0.};
+
   //fil hit info
   for(int ihit = 0; ihit < (int)calo[plane_index].dQdx().size(); ihit++){
     //create a highland hit 
@@ -650,10 +666,19 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     ResRange.push_back(calo[plane_index].ResidualRange().at(ihit));
     
     hit.Position.SetXYZ(calo[plane_index].XYZ().at(ihit).X(), calo[plane_index].XYZ().at(ihit).Y(), calo[plane_index].XYZ().at(ihit).Z());
+    hit.PositionNoSCE.SetXYZ(calonosce[plane_index_nosce].XYZ().at(ihit).X(), calonosce[plane_index_nosce].XYZ().at(ihit).Y(), calonosce[plane_index_nosce].XYZ().at(ihit).Z());
 
+    //test
+    const recob::Hit & ls_hit = (*allHits)[calo[plane_index].TpIndices().at(ihit)];
+    hit.TPCid = ls_hit.WireID().TPC;
+    hit.PlaneID = plane_index;
+    hit.dQdx_NoSCE  = calonosce[plane_index_nosce].dQdx().at(ihit);
+    hit.dEdx_NoSCE  = calonosce[plane_index_nosce].dEdx().at(ihit);
     //add it to the vector of hits
     part->Hits[2].push_back(hit);
   }
+
+  std::cout << 3 << std::endl;
 
   //get PID
   std::pair<double,int> proton_PID = trackUtil.Chi2PID(dEdx,ResRange,PIDProfiles[2212]);
