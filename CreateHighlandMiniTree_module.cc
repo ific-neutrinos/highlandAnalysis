@@ -613,8 +613,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     return;
   }
 
-  std::cout << "MIGUEEEEEEEEE " << plane_index << " " << plane_index_nosce << " " << calo[plane_index].dQdx().size() << " " << calonosce[plane_index_nosce].dQdx().size() << calo[plane_index].dEdx().size() << " " << calonosce[plane_index_nosce].dEdx().size() << std::endl;
-
   //get corrected SCE positions and directions of the track
   if(!calo[plane_index].XYZ().empty()){
     part->PositionStartSCE[0] = calo[plane_index].XYZ()[0].X();
@@ -649,10 +647,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   dEdx.clear();
   ResRange.clear();
 
-  //auto const* sce = lar::providerFrom<spacecharge::SpaceChargeService>();
-  //sce->EnableCalEfieldSCE();
-  //geo::Vector_t posOffset = {0., 0., 0.};
-
   //fil hit info
   for(int ihit = 0; ihit < (int)calo[plane_index].dQdx().size(); ihit++){
     //create a highland hit 
@@ -668,17 +662,15 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     hit.Position.SetXYZ(calo[plane_index].XYZ().at(ihit).X(), calo[plane_index].XYZ().at(ihit).Y(), calo[plane_index].XYZ().at(ihit).Z());
     hit.PositionNoSCE.SetXYZ(calonosce[plane_index_nosce].XYZ().at(ihit).X(), calonosce[plane_index_nosce].XYZ().at(ihit).Y(), calonosce[plane_index_nosce].XYZ().at(ihit).Z());
 
-    //test
+    //get information for dQdx calibration
     const recob::Hit & ls_hit = (*allHits)[calo[plane_index].TpIndices().at(ihit)];
     hit.TPCid = ls_hit.WireID().TPC;
-    hit.PlaneID = plane_index;
+    hit.PlaneID = 2; //we only save collection plane information
     hit.dQdx_NoSCE  = calonosce[plane_index_nosce].dQdx().at(ihit);
     hit.dEdx_NoSCE  = calonosce[plane_index_nosce].dEdx().at(ihit);
     //add it to the vector of hits
     part->Hits[2].push_back(hit);
   }
-
-  std::cout << 3 << std::endl;
 
   //get PID
   std::pair<double,int> proton_PID = trackUtil.Chi2PID(dEdx,ResRange,PIDProfiles[2212]);
