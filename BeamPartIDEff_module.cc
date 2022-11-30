@@ -241,12 +241,12 @@ void highlandAnalysis::BeamPartIDEff::beginJob(){
 
   art::ServiceHandle<art::TFileService> tfs;
   fTree = tfs->make<TTree>("EffTree","Efficiency Tree");
-  fTree->Branch("PLikeBeamEvents",  &fPLikeBeamEvents);
-  fTree->Branch("PiLikeBeamEvents", &fPiLikeBeamEvents);
-  fTree->Branch("KLikeBeamEvents",  &fKLikeBeamEvents);
-  fTree->Branch("PLikeBeamEvents",  &fPLikeBeamEventsReconstructed);
-  fTree->Branch("PiLikeBeamEvents", &fPiLikeBeamEventsReconstructed);
-  fTree->Branch("KLikeBeamEvents",  &fKLikeBeamEventsReconstructed);
+  fTree->Branch("PLikeBeamEvents" ,              &fPLikeBeamEvents);
+  fTree->Branch("PiLikeBeamEvents",              &fPiLikeBeamEvents);
+  fTree->Branch("KLikeBeamEvents" ,              &fKLikeBeamEvents);
+  fTree->Branch("PLikeBeamEventsReconstructed" , &fPLikeBeamEventsReconstructed);
+  fTree->Branch("PiLikeBeamEventsReconstructed", &fPiLikeBeamEventsReconstructed);
+  fTree->Branch("KLikeBeamEventsReconstructed" , &fKLikeBeamEventsReconstructed);
 }
 
 //*****************************************************************************
