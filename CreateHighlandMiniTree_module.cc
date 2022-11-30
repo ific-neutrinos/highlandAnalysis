@@ -670,6 +670,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     hit.dEdx_NoSCE  = calonosce[plane_index_nosce].dEdx().at(ihit);
     //add it to the vector of hits
     part->Hits[2].push_back(hit);
+
+    //std::cout << hit.dQdx << " " << hit.dQdx_NoSCE << std::endl;
   }
 
   //get PID
