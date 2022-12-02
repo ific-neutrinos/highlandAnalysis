@@ -17,6 +17,7 @@
 #include "art/Framework/Principal/Run.h"
 #include "art/Framework/Principal/SubRun.h"
 #include "canvas/Utilities/InputTag.h"
+#include "canvas/Persistency/Common/FindManyP.h"
 #include "fhiclcpp/ParameterSet.h"
 #include "messagefacility/MessageLogger/MessageLogger.h"
 
@@ -34,6 +35,8 @@
 #include "lardata/DetectorInfoServices/DetectorPropertiesService.h"
 #include "lardata/ArtDataHelper/MVAReader.h"
 #include "lardataobj/RecoBase/Wire.h"
+#include "lardataobj/RecoBase/SpacePoint.h"
+#include "lardataobj/RecoBase/TrackHitMeta.h"
 #include "protoduneana/Utilities/ProtoDUNECalibration.h"
 
 #include "larevt/SpaceCharge/SpaceCharge.h"
@@ -96,7 +99,7 @@ public:
 			    int generation, bool recursive = true);
   void FillBeamInfo        (art::Event const &evt, AnaBeamPD* beam);
   void FillBunchInfo       (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch, AnaSpillPD* spill);
-  void FillParticleInfo    (art::Event const &evt, art::ValidHandle<std::vector<recob::PFParticle>> &pfpVec, 
+  void FillParticleInfo    (art::Event const &evt, art::ValidHandle<std::vector<recob::PFParticle>> &pfpHandle, 
 			    const recob::PFParticle* ls_part,
 			    std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch, 
 			    int generation, bool BeamOrigin, bool isPandora = false);
@@ -472,9 +475,9 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
 
   //Get the primary PFParticle and the vector of PFParticles
   std::vector<const recob::PFParticle*> primaryParticles = pfpUtil.GetPFParticlesFromBeamSlice(evt,fPFParticleTag);
-  auto pfpVec = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
+  auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
 
-  if(fDebug)std::cout << "there are " << (*pfpVec).size() << " PFP particles in this event" << std::endl;
+  if(fDebug)std::cout << "there are " << (*pfpHandle).size() << " PFP particles in this event" << std::endl;
 
   if(primaryParticles.size() == 0){
     std::cout << "No primary particle found" << std::endl;
@@ -493,13 +496,13 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
   bool isPandora  = true;
   
   if(fDebug)std::cout << "Filling particle info recursively" << std::endl;
-  FillParticleInfo(evt, pfpVec, ls_primaryPart, trueParticles, bunch, generation, BeamOrigin, isPandora);
+  FillParticleInfo(evt, pfpHandle, ls_primaryPart, trueParticles, bunch, generation, BeamOrigin, isPandora);
 }
 
 
 //*****************************************************************************
 void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const &evt,
-								art::ValidHandle<std::vector<recob::PFParticle>> &pfpVec,
+								art::ValidHandle<std::vector<recob::PFParticle>> &pfpHandle,
 								const recob::PFParticle* ls_part,
 								std::vector<AnaTrueParticleB*>& trueParticles,
 								AnaBunch* bunch, int generation, bool BeamOrigin, bool isPandora){
@@ -549,12 +552,12 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   //loop over daughters
   for(int idau = 0; idau < ls_part->NumDaughters(); idau++){
     //get daughter matching id
-    const recob::PFParticle* ls_dau = &(pfpVec->at(ls_part->Daughter(idau)));
+    const recob::PFParticle* ls_dau = &(pfpHandle->at(ls_part->Daughter(idau)));
     //fill daughters id vector
     part->DaughtersIDs.push_back(ls_dau->Self());
     //fill daughter info
     if(generation < fMaxGeneration)
-      FillParticleInfo(evt, pfpVec, ls_dau, trueParticles, bunch, generation, BeamOrigin);
+      FillParticleInfo(evt, pfpHandle, ls_dau, trueParticles, bunch, generation, BeamOrigin);
   }
 }
 
@@ -614,6 +617,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   }
 
   //get corrected SCE positions and directions of the track
+  //I think this is not needed anymore... to be checked.
   if(!calo[plane_index].XYZ().empty()){
     part->PositionStartSCE[0] = calo[plane_index].XYZ()[0].X();
     part->PositionStartSCE[1] = calo[plane_index].XYZ()[0].Y();
@@ -633,10 +637,24 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   }
 
   //get a handle of all hits
-  auto allHits = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
-  std::vector<art::Ptr<recob::Hit>> hit_vector;
-  art::fill_ptr_vector(hit_vector, allHits);
-    
+  auto hitHandle = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
+  std::vector<art::Ptr<recob::Hit>> hitVec;
+  art::fill_ptr_vector(hitVec, hitHandle);
+  
+  //get the hits and metadata associated to every track in the event for SCE pitch correction (probably this could be done globally only once)
+  auto trackHandle = evt.getValidHandle<std::vector<recob::Track>>(fTrackerTag);
+  std::vector<art::Ptr<recob::Track>> trackVec;
+  art::fill_ptr_vector(trackVec, trackHandle);
+  art::FindManyP<recob::Hit, recob::TrackHitMeta> fmthm(trackHandle,evt,fTrackerTag); 
+  
+  std::vector<const recob::TrackHitMeta*, std::allocator<const recob::TrackHitMeta*>> metaVec;
+  std::vector<art::Ptr<recob::Hit>> hitVec2;
+  //get metadata for this track
+  if(fmthm.isValid()){
+    metaVec = fmthm.data(track->ID());
+    hitVec2 = fmthm.at(track->ID());
+  }
+
   //number of hits
   if(evt.isRealData())part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
   else                part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
@@ -660,18 +678,36 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     ResRange.push_back(calo[plane_index].ResidualRange().at(ihit));
     
     hit.Position.SetXYZ(calo[plane_index].XYZ().at(ihit).X(), calo[plane_index].XYZ().at(ihit).Y(), calo[plane_index].XYZ().at(ihit).Z());
-    hit.PositionNoSCE.SetXYZ(calonosce[plane_index_nosce].XYZ().at(ihit).X(), calonosce[plane_index_nosce].XYZ().at(ihit).Y(), calonosce[plane_index_nosce].XYZ().at(ihit).Z());
+    hit.Position_NoSCE.SetXYZ(calonosce[plane_index_nosce].XYZ().at(ihit).X(), calonosce[plane_index_nosce].XYZ().at(ihit).Y(), calonosce[plane_index_nosce].XYZ().at(ihit).Z());
 
     //get information for dQdx calibration
-    const recob::Hit & ls_hit = (*allHits)[calo[plane_index].TpIndices().at(ihit)];
-    hit.TPCid = ls_hit.WireID().TPC;
+    //this is the hit used to fill the calorimetry object
+    art::Ptr<recob::Hit> ls_hit = hitVec[calo[plane_index].TpIndices().at(ihit)];
+
+    //tpc and plane for sce and dedx calibration
+    hit.TPCid = ls_hit->WireID().TPC;
     hit.PlaneID = 2; //we only save collection plane information
+
     hit.dQdx_NoSCE  = calonosce[plane_index_nosce].dQdx().at(ihit);
     hit.dEdx_NoSCE  = calonosce[plane_index_nosce].dEdx().at(ihit);
+
+    hit.Pitch       = calo[plane_index].TrkPitchVec().at(ihit);
+    hit.Pitch_NoSCE = calonosce[plane_index_nosce].TrkPitchVec().at(ihit);
+
+    //look for the same hit in the track-meta association
+    for(int iss = 0; iss < (int)hitVec2.size(); iss++){
+      if(hitVec2[iss].key()==ls_hit.key()){
+	//now, from the meta, get the space point in the track and the direction of the hit
+	hit.Direction_NoSCE.SetXYZ(track->DirectionAtPoint(metaVec[iss]->Index()).X(),
+				   track->DirectionAtPoint(metaVec[iss]->Index()).Y(),
+				   track->DirectionAtPoint(metaVec[iss]->Index()).Z());
+      }
+    }
+
+    std::cout << hit.dQdx << " " << hit.dQdx_NoSCE << std::endl;
+
     //add it to the vector of hits
     part->Hits[2].push_back(hit);
-
-    //std::cout << hit.dQdx << " " << hit.dQdx_NoSCE << std::endl;
   }
 
   //get PID
@@ -737,17 +773,17 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsInfo(art::Event const 
   if(fDebug)std::cout << "filling cosmics info" << std::endl;
   
   //get vector of pfp particles
-  auto pfpVec = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
-  if(fDebug)std::cout << "there are " << (*pfpVec).size() << " PFP particles in this event" << std::endl;
+  auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
+  if(fDebug)std::cout << "there are " << (*pfpHandle).size() << " PFP particles in this event" << std::endl;
 
   int cosmics = 0; 
 
   //look for interesting cosmics and add them to the particle vector if they have not been added previously
-  for(const recob::PFParticle ls_part : (*pfpVec)){
+  for(const recob::PFParticle ls_part : (*pfpHandle)){
     if(!GetRecoParticle(bunch, ls_part.Self())){
       if(IsInterestingCosmic(evt,&ls_part)){
 	cosmics++;
-	FillParticleInfo(evt, pfpVec, &ls_part, trueParticles, bunch, -1, false);
+	FillParticleInfo(evt, pfpHandle, &ls_part, trueParticles, bunch, -1, false);
       }
     }
   }

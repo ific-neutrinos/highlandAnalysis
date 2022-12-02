@@ -60,8 +60,8 @@ physics:
 
 }
 
-physics.analyzers.highlandana.CalorimetryTag:       "pandoracalo"
-physics.analyzers.highlandana.CalorimetryTagNoSCE:  "pandoracalonosce"
+physics.analyzers.highlandana.CalorimetryTag:       "pandoracalinoxyzt"
+physics.analyzers.highlandana.CalorimetryTagNoSCE:  "pandoracalo"
 physics.analyzers.highlandana.Debug: 		    true
 physics.analyzers.highlandana.WasteTime: 	    false
 physics.analyzers.highlandana.Cosmics:    	    false
