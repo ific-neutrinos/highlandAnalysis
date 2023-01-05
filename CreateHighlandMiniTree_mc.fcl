@@ -60,8 +60,8 @@ physics:
 
 }
 
-physics.analyzers.highlandana.CalorimetryTag:       "pandoracalinoxyzt"
-physics.analyzers.highlandana.CalorimetryTagNoSCE:  "pandoracalo"
+physics.analyzers.highlandana.CalorimetryTag:       "pandoracali"
+physics.analyzers.highlandana.CalorimetryTagNoSCE:  "pandoracalonosce"
 physics.analyzers.highlandana.Debug: 		    true
 physics.analyzers.highlandana.WasteTime: 	    false
 physics.analyzers.highlandana.Cosmics:    	    false
@@ -70,11 +70,11 @@ physics.analyzers.highlandana.NominalBeamMom:	    6.0
 services.ParticleInventoryService.ParticleInventory.EveIdCalculator: "EmEveIdCalculator"
 
 # xyzt database
-services.XYZCalibService.IsMC: true
+services.XYZCalibService.IsMC:            true
 services.XYZCalibService.UseCondbXYZCorr: true
-services.XYZCalibService.YZCorrDBTag: "prod4"
-services.XYZCalibService.XCorrDBTag: "prod4"
-services.XYZCalibService.NormCorrDBTag: "prod4"
+services.XYZCalibService.YZCorrDBTag:     "prod4"
+services.XYZCalibService.XCorrDBTag:      "prod4"
+services.XYZCalibService.NormCorrDBTag:   "prod4"
 
 physics.producers.pandoracali:                               @local::protodunespmcsce_calibrationdedx
 physics.producers.pandoracali.CalorimetryModuleLabel:        "pandoracalinoxyzt"

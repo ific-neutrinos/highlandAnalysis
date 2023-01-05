@@ -39,9 +39,6 @@
 #include "lardataobj/RecoBase/TrackHitMeta.h"
 #include "protoduneana/Utilities/ProtoDUNECalibration.h"
 
-#include "larevt/SpaceCharge/SpaceCharge.h"
-#include "larevt/SpaceChargeServices/SpaceChargeService.h"
-
 //root includes
 #include "TTree.h"
 #include "TVector3.h"
@@ -616,26 +613,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     return;
   }
 
-  //get corrected SCE positions and directions of the track
-  //I think this is not needed anymore... to be checked.
-  if(!calo[plane_index].XYZ().empty()){
-    part->PositionStartSCE[0] = calo[plane_index].XYZ()[0].X();
-    part->PositionStartSCE[1] = calo[plane_index].XYZ()[0].Y();
-    part->PositionStartSCE[2] = calo[plane_index].XYZ()[0].Z();
-    
-    part->PositionEndSCE[0] = calo[plane_index].XYZ().back().X();
-    part->PositionEndSCE[1] = calo[plane_index].XYZ().back().Y();
-    part->PositionEndSCE[2] = calo[plane_index].XYZ().back().Z();
-    
-    TVector3 dir((calo[plane_index].XYZ().back().X() - calo[plane_index].XYZ()[0].X()),
-		 (calo[plane_index].XYZ().back().Y() - calo[plane_index].XYZ()[0].Y()),
-		 (calo[plane_index].XYZ().back().Z() - calo[plane_index].XYZ()[0].Z()));
-    
-    part->DirectionStartSCE[0] = part->DirectionEndSCE[0] = dir.Unit().X();
-    part->DirectionStartSCE[1] = part->DirectionEndSCE[1] = dir.Unit().Y();
-    part->DirectionStartSCE[2] = part->DirectionEndSCE[2] = dir.Unit().Z();
-  }
-
   //get a handle of all hits
   auto hitHandle = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
   std::vector<art::Ptr<recob::Hit>> hitVec;
@@ -656,8 +633,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   }
 
   //number of hits
-  if(evt.isRealData())part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
-  else                part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
+  part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
 
   //for chi2 calculation
   std::vector<double> dEdx;
@@ -670,29 +646,27 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     //create a highland hit 
     AnaHitPD hit;
     
-    //fill calo info
+    //fill calibrated calorimetry info
     hit.dQdx          = calo[plane_index].dQdx().at(ihit);
     hit.dEdx          = calo[plane_index].dEdx().at(ihit);
     hit.ResidualRange = calo[plane_index].ResidualRange().at(ihit);
-    dEdx.push_back(calo[plane_index].dEdx().at(ihit));
-    ResRange.push_back(calo[plane_index].ResidualRange().at(ihit));
-    
-    hit.Position.SetXYZ(calo[plane_index].XYZ().at(ihit).X(), calo[plane_index].XYZ().at(ihit).Y(), calo[plane_index].XYZ().at(ihit).Z());
-    hit.Position_NoSCE.SetXYZ(calonosce[plane_index_nosce].XYZ().at(ihit).X(), calonosce[plane_index_nosce].XYZ().at(ihit).Y(), calonosce[plane_index_nosce].XYZ().at(ihit).Z());
+    hit.Pitch         = calo[plane_index].TrkPitchVec().at(ihit);
+    hit.Position.SetXYZ(calo[plane_index].XYZ().at(ihit).X(), 
+			calo[plane_index].XYZ().at(ihit).Y(), 
+			calo[plane_index].XYZ().at(ihit).Z());
 
-    //get information for dQdx calibration
+    //fill raw calorimetry info
+    hit.dQdx_NoSCE          = calonosce[plane_index_nosce].dQdx().at(ihit);
+    hit.dEdx_NoSCE          = calonosce[plane_index_nosce].dEdx().at(ihit);
+    hit.ResidualRange_NoSCE = calonosce[plane_index].ResidualRange().at(ihit);
+    hit.Pitch_NoSCE         = calonosce[plane_index_nosce].TrkPitchVec().at(ihit);
+    hit.Position_NoSCE.SetXYZ(calonosce[plane_index_nosce].XYZ().at(ihit).X(),
+			      calonosce[plane_index_nosce].XYZ().at(ihit).Y(),
+			      calonosce[plane_index_nosce].XYZ().at(ihit).Z());
+
+    //extra information for calibrations
     //this is the hit used to fill the calorimetry object
     art::Ptr<recob::Hit> ls_hit = hitVec[calo[plane_index].TpIndices().at(ihit)];
-
-    //tpc and plane for sce and dedx calibration
-    hit.TPCid = ls_hit->WireID().TPC;
-    hit.PlaneID = 2; //we only save collection plane information
-
-    hit.dQdx_NoSCE  = calonosce[plane_index_nosce].dQdx().at(ihit);
-    hit.dEdx_NoSCE  = calonosce[plane_index_nosce].dEdx().at(ihit);
-
-    hit.Pitch       = calo[plane_index].TrkPitchVec().at(ihit);
-    hit.Pitch_NoSCE = calonosce[plane_index_nosce].TrkPitchVec().at(ihit);
 
     //look for the same hit in the track-meta association
     for(int iss = 0; iss < (int)hitVec2.size(); iss++){
@@ -704,9 +678,14 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
       }
     }
 
-    std::cout << hit.dQdx << " " << hit.dQdx_NoSCE << std::endl;
+    hit.TPCid = ls_hit->WireID().TPC;
+    hit.PlaneID = 2; //we only save collection plane information
 
-    //add it to the vector of hits
+    //fill vectors for chi2 calculation
+    dEdx.push_back(hit.dEdx);
+    ResRange.push_back(hit.ResidualRange);
+    
+    //add hit to vector of hits
     part->Hits[2].push_back(hit);
   }
 
