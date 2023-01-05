@@ -17,12 +17,9 @@ highlandAnalysis:
   TrackerTag:           "pandoraTrack"
   ShowerTag:            "pandoraShower"
   CalorimetryTag:       "pandoracali"
-  CalorimetryTagNoSCE:  "pandoracalinoxyzt"	
+  CalorimetryTagNoSCE:  "pandoracalonosce"	
   HitTag:               "hitpdune"
   
-  #CalibrationParsSCE:   @local::CalorimetryParameters_SPProd2_MC_SCE
-  #CalibrationParsNoSCE: @local::CalorimetryParameters_SPProd2_MC_35ms
-
   PIDFilename:		"dEdxrestemplates.root"
 
   Cosmics:		true

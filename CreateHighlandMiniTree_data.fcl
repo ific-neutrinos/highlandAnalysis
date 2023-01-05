@@ -68,24 +68,25 @@ outputs: {}
 physics.producers.pandoracali.CaloAlg.CalAreaConstants: [1.166e-3, 1.122e-3, 1.038e-3]
 physics.producers.pandora2cali.CaloAlg.CalAreaConstants: [1.166e-3, 1.122e-3, 1.038e-3]
 
-physics.analyzers.highlandana.Debug:          true
-physics.analyzers.highlandana.Cosmics:        false
-physics.analyzers.highlandana.CalorimetryTag: "pandoracali"
-physics.analyzers.highlandana.NominalBeamMom: 6.0
+physics.analyzers.highlandana.Debug:               true
+physics.analyzers.highlandana.Cosmics:             false
+physics.analyzers.highlandana.CalorimetryTag:      "pandoracali"
+physics.analyzers.highlandana.CalorimetryTagNoSCE: "pandoracalonosce"
+physics.analyzers.highlandana.NominalBeamMom:      6.0
 
 services.ParticleInventoryService.ParticleInventory.EveIdCalculator: "EmEveIdCalculator"
 
 services.DetectorPropertiesService.Electronlifetime: 35000
 
-services.SpaceCharge.EnableCalEfieldSCE: true
+services.SpaceCharge.EnableCalEfieldSCE:  true
 services.SpaceCharge.EnableCalSpatialSCE: true
-services.SpaceCharge.EnableSimEfieldSCE: true
+services.SpaceCharge.EnableSimEfieldSCE:  true
 services.SpaceCharge.EnableSimSpatialSCE: true
 services.SpaceCharge.EnableSimulationSCE: true
 
 # xyzt database
-services.XYZCalibService.IsMC: false
+services.XYZCalibService.IsMC:            false
 services.XYZCalibService.UseCondbXYZCorr: true
-services.XYZCalibService.YZCorrDBTag: "prod4"
-services.XYZCalibService.XCorrDBTag: "prod4"
-services.XYZCalibService.NormCorrDBTag: "prod4"
+services.XYZCalibService.YZCorrDBTag:     "prod4"
+services.XYZCalibService.XCorrDBTag:      "prod4"
+services.XYZCalibService.NormCorrDBTag:   "prod4"
