@@ -582,6 +582,16 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   part->DirectionEnd[2] = track->EndDirection().Z();
     
   part->Length = track->Length();
+  //fill trajectory points vector
+  int ntrajpts = track->NumberTrajectoryPoints();
+  for(int i = 1; i < ntrajpts; i++){
+    AnaTrajectoryPointPD tjp;
+    auto pos = track->LocationAtPoint(i);
+    auto dir = track->DirectionAtPoint(i);
+    tjp.Position_NoSCE.SetXYZ(pos.X(),pos.Y(),pos.Z());
+    tjp.Direction_NoSCE.SetXYZ(dir.X(),dir.Y(),dir.Z());
+    part->TrjPoints.push_back(tjp);
+  }
 
   //fill hit basic info
   for(int iplane = 0; iplane < 3; iplane++)part->Hits[iplane].clear();
