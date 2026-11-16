@@ -659,10 +659,11 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   if(track)      FillTrackInfo(evt,track,part);
   else if(shower)FillShowerInfo(shower,part);
 
-  //hits of the PFParticles without track (tracks have their calorimetry hits), and 3D space points
-  if(!track && fFillDetail){
-    if(fSaveHitsAllPlanes)FillPFParticleHits(ls_part_hits, part);
-    if(fSaveSpacePoints)  FillSpacePoints(ls_part, part);
+  //hits of the PFParticle not saved with calorimetry (HitsNoCalo, so that the analyses using
+  //Hits do not change), and 3D space points of the PFParticles without track
+  if(fFillDetail){
+    if(fSaveHitsAllPlanes)        FillPFParticleHits(ls_part_hits, part);
+    if(!track && fSaveSpacePoints)FillSpacePoints(ls_part, part);
   }
 
   //go for CNN (outputs: track, em, michel, none), plane 2
@@ -876,19 +877,21 @@ void highlandAnalysis::CreateHighlandMiniTree::FillHitRawInfo(const art::Ptr<rec
 void highlandAnalysis::CreateHighlandMiniTree::FillPFParticleHits(const std::vector<art::Ptr<recob::Hit>>& hits, AnaParticlePD* part){
 //*****************************************************************************
 
-  //raw hits of the PFParticle (no calorimetry), in the three planes
+  //raw hits of the PFParticle (no calorimetry) that are not already in Hits: for tracks, those
+  //that the calorimetry drops (mostly 2D hits without space point); for the rest, all of them
+  std::set<Int_t> withCalo;
   for(int iplane = 0; iplane < 3; iplane++){
-    part->Hits[iplane].clear();
-    part->NHitsPerPlane[iplane] = 0;
+    part->HitsNoCalo[iplane].clear();
+    for(const AnaHitPD& h : part->Hits[iplane])withCalo.insert(h.UniqueID);
   }
 
   for(const art::Ptr<recob::Hit>& ls_hit : hits){
     const int plane = ls_hit->WireID().Plane;
     if(plane < 0 || plane > 2)continue;
+    if(withCalo.count(ls_hit.key()))continue;
     AnaHitPD hit;
     FillHitRawInfo(ls_hit, hit);
-    part->Hits[plane].push_back(hit);
-    part->NHitsPerPlane[plane]++;
+    part->HitsNoCalo[plane].push_back(hit);
   }
 }
 
@@ -903,12 +906,9 @@ void highlandAnalysis::CreateHighlandMiniTree::FillSpacePoints(const recob::PFPa
   for(const art::Ptr<recob::SpacePoint>& ls_sp : fPFPSpacePoints->at(ls_part->Self())){
     AnaSpacePointPD sp;
     for(int i = 0; i < 3; i++)sp.Position[i] = ls_sp->XYZ()[i];
-    if(fSpacePointHits->isValid()){
-      for(const art::Ptr<recob::Hit>& ls_hit : fSpacePointHits->at(ls_sp.key())){
-	const int plane = ls_hit->WireID().Plane;
-	if(plane >= 0 && plane < 3)sp.HitIDs[plane] = ls_hit.key();
-      }
-    }
+    //Pandora builds one space point per 2D hit
+    if(fSpacePointHits->isValid() && !fSpacePointHits->at(ls_sp.key()).empty())
+      sp.HitID = fSpacePointHits->at(ls_sp.key())[0].key();
     part->SpacePoints.push_back(sp);
   }
 }
