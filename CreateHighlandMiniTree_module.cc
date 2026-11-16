@@ -7,7 +7,6 @@
 // from cetpkgsupport v1_14_01.
 ////////////////////////////////////////////////////////////////////////
 
-#include<unistd.h>
 #include <array>
 #include <map>
 #include <memory>
@@ -37,7 +36,6 @@
 #include "protoduneana/Utilities/ProtoDUNETruthUtils.h"
 #include "protoduneana/Utilities/ProtoDUNEPFParticleUtils.h"
 #include "protoduneana/Utilities/ProtoDUNEBeamlineUtils.h"
-#include "protoduneana/Utilities/ProtoDUNEBeamCuts.h"
 #include "larsim/MCCheater/ParticleInventoryService.h"
 #include "larsim/MCCheater/BackTrackerService.h"
 #include "larcore/Geometry/Geometry.h"
@@ -45,13 +43,13 @@
 #include "lardataobj/RecoBase/Cluster.h"
 #include "lardataobj/AnalysisBase/T0.h"
 #include "lardataobj/RawData/RDTimeStamp.h"
+#include "lardataobj/RawData/RawDigit.h"
 #include "duneprototypes/Protodune/singlephase/DataUtils/ProtoDUNEDataUtils.h"
 #include "lardata/DetectorInfoServices/DetectorPropertiesService.h"
 #include "lardata/ArtDataHelper/MVAReader.h"
 #include "lardataobj/RecoBase/Wire.h"
 #include "lardataobj/RecoBase/SpacePoint.h"
 #include "lardataobj/RecoBase/TrackHitMeta.h"
-#include "protoduneana/Utilities/ProtoDUNECalibration.h"
 
 //root includes
 #include "TTree.h"
@@ -88,7 +86,6 @@ public:
   // Selected optional functions
   void beginJob() override;
   void endJob() override;
-  void reset();
 
   // HighLAND functions
   AnaSpillPD*         MakeSpill()       { return new AnaSpillPD(); }
@@ -149,6 +146,7 @@ public:
 
   /// Start and end points of the saved beam-slice particles (reco coordinates)
   std::vector<geo::Point_t> GetBeamSliceEnds(AnaBunch* bunch);
+  std::vector<geo::Point_t> fBeamSliceEnds; // computed once per event, in FillCosmicsInfo
 
   /// Summed CNN output (track, em, michel, none) of the hits of a PFParticle in one plane, and number of hits
   std::pair<std::array<float,4>,int> GetCNNOutputFromPFParticleFromPlane(const art::Event &evt,
@@ -215,6 +213,8 @@ private:
   std::string fForcedCalorimetryTag;
   bool        fSaveTrueHitCounts;    // backtrack all the hits of the event (MC)
   protoana::ProtoDUNEDataUtils fDataUtils;
+  art::InputTag fRawDigitTag;          // the products ProtoDUNEDataUtils needs (from its configuration)
+  art::InputTag fRawDigitTimeStampTag;
   std::vector<std::pair<UInt_t,UInt_t>> fUnstableHVTimeRanges; // same list as the unstable HV filter
   int         fFullDumpPrescale; // complete dump in 1 of every N events (0 = never)
   
@@ -229,7 +229,6 @@ private:
   bool fFullDump;              // this event is dumped completely (FullDumpPrescale)
   bool fFillDetail;            // fill hits, trajectory points and space points of the particle being filled
   const simb::MCParticle* fBeamPrimary; // true beam particle (its trajectory is always saved)
-  AnaBunch* fBunch;            // bunch being filled
   bool fIsMC;
   int fNEvents;
 
@@ -278,6 +277,8 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fForcedCalorimetryTag(p.get<std::string>("ForcedCalorimetryTag", "pandora2cali")),
   fSaveTrueHitCounts(p.get<bool>("SaveTrueHitCounts", true)),
   fDataUtils(p.get<fhicl::ParameterSet>("DataUtils")),
+  fRawDigitTag(p.get<fhicl::ParameterSet>("DataUtils").get<art::InputTag>("RawDigitTag")),
+  fRawDigitTimeStampTag(p.get<fhicl::ParameterSet>("DataUtils").get<art::InputTag>("RawDigitTimeStampTag")),
   fUnstableHVTimeRanges(p.get<std::vector<std::pair<UInt_t,UInt_t>>>("UnstableHVTimeRanges")),
   fFullDumpPrescale(p.get<int>("FullDumpPrescale", 0)),
 
@@ -290,7 +291,6 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fFullDump(false),
   fFillDetail(true),
   fBeamPrimary(NULL),
-  fBunch(NULL),
   fIsMC(false),
   fNEvents(0){
 
@@ -307,10 +307,14 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fTrueTrajPDGs.insert(trajPDGs.begin(), trajPDGs.end());
 
   fPIDFile = TFile::Open(fPIDFilename.c_str());
+  if(!fPIDFile || fPIDFile->IsZombie())
+    throw cet::exception("CreateHighlandMiniTree") << "Cannot open the PID templates file " << fPIDFilename;
   PIDProfiles[211]  = (TProfile*)fPIDFile->Get("dedx_range_pi" );
   PIDProfiles[321]  = (TProfile*)fPIDFile->Get("dedx_range_ka" );
   PIDProfiles[13]   = (TProfile*)fPIDFile->Get("dedx_range_mu" );
   PIDProfiles[2212] = (TProfile*)fPIDFile->Get("dedx_range_pro");
+  for(const auto& pr : PIDProfiles)
+    if(!pr.second)throw cet::exception("CreateHighlandMiniTree") << "Missing dE/dx profile for PDG " << pr.first << " in " << fPIDFilename;
 }
 
 //*****************************************************************************
@@ -336,8 +340,9 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
 
   //data quality and check
   spill->DataQuality = MakeDataQuality();
-  FillDQInfo(evt,static_cast<AnaDataQuality*>(spill->DataQuality));
-  bool goodDaq = static_cast<AnaDataQuality*>(spill->DataQuality)->GoodDaq;
+  AnaDataQualityPD* dq = static_cast<AnaDataQualityPD*>(spill->DataQuality);
+  FillDQInfo(evt, dq);
+  const bool goodDaq = dq->GoodDaq;
   if(!goodDaq)mf::LogVerbatim("CreateHighlandMiniTree") << "Beam quality check failed, event saved as bad DAQ";
 
   //beam related information, for all events. Each event counts as one spill: highland's
@@ -434,7 +439,7 @@ void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const
 
   //per-event state
   fBeamPrimary = NULL;
-  fBunch = NULL;
+  fBeamSliceEnds.clear();
   fIsMC = !evt.isRealData();
   fFillDetail = true;
   fFullDump = fFullDumpPrescale > 0 && fNEvents % fFullDumpPrescale == 0;
@@ -472,12 +477,17 @@ void highlandAnalysis::CreateHighlandMiniTree::FillDQInfo(art::Event const &evt,
 
   if(!evt.isRealData())return;
 
-  //what the FEMB filter checks (ProtoDUNEFembFilter): active FEMBs per APA and timestamp consistency
-  for(int apa = 0; apa < 6; apa++)dq->NActiveFembs[apa] = fDataUtils.GetNActiveFembsForAPA(evt, apa);
-  ULong64_t ts = 0, ts2 = 0;
-  int apainconsist = 0;
-  dq->TimeStampConsistent         = fDataUtils.CheckTimeStampConsistencyForAPAs(evt, {0,1,2,3,4,5}, ts, ts2, apainconsist);
-  dq->TimeStampConsistentBeamSide = fDataUtils.CheckTimeStampConsistencyForAPAs(evt, {0,2,4}, ts, ts2, apainconsist);
+  //what the FEMB filter checks (ProtoDUNEFembFilter): active FEMBs per APA and timestamp consistency.
+  //They need the raw digits and their timestamps, which may not be in the input (reco) file: then
+  //the values stay unassigned (-999). Without the timestamps CheckTimeStampConsistencyForAPAs throws
+  if(evt.getHandle<std::vector<raw::RawDigit>>(fRawDigitTag))
+    for(int apa = 0; apa < 6; apa++)dq->NActiveFembs[apa] = fDataUtils.GetNActiveFembsForAPA(evt, apa);
+  if(evt.getHandle<std::vector<raw::RDTimeStamp>>(fRawDigitTimeStampTag)){
+    ULong64_t ts = 0, ts2 = 0;
+    int apainconsist = 0;
+    dq->TimeStampConsistent         = fDataUtils.CheckTimeStampConsistencyForAPAs(evt, {0,1,2,3,4,5}, ts, ts2, apainconsist);
+    dq->TimeStampConsistentBeamSide = fDataUtils.CheckTimeStampConsistencyForAPAs(evt, {0,2,4}, ts, ts2, apainconsist);
+  }
 
   //what the unstable HV filter checks (ProtoDUNEUnstableHVFilter): time from the timing system in
   //an unstable period. The filter compares whole seconds
@@ -570,16 +580,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillForcedTrack(art::Event const 
 }
 
 //*****************************************************************************
-
-  if(fDebug)std::cout << "Filling data quality info" << std::endl;
-
-  //associate trigger quality to data quality. Only for data, MC is always good.
-  if(evt.isRealData())dq->GoodDaq = fBeamlineUtils.IsGoodBeamlineTrigger(evt);
-  else dq->GoodDaq = true;
-
-}
-
-//*****************************************************************************
 void highlandAnalysis::CreateHighlandMiniTree::FillBeamTrueInfo(art::Event const &evt, AnaSpill* spill){
 //*****************************************************************************
   
@@ -629,7 +629,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
   //fill truepart information
   truePart->ID       = ls_truePart->TrackId();
   truePart->ParentID = ls_truePart->Mother();
-  truePart->Origin   = piServ->TrackIdToMCTruth_P(ls_truePart->TrackId())->Origin();
+  const art::Ptr<simb::MCTruth> mcTruth = piServ->TrackIdToMCTruth_P(ls_truePart->TrackId());
+  truePart->Origin   = mcTruth ? mcTruth->Origin() : 0;
   if(truePart->Origin==0 && parent)truePart->Origin = parent->Origin; //if unknown origin, assign parent origin
 
   truePart->PDG                  = ls_truePart->PdgCode();
@@ -684,6 +685,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
     if(recursive){//we may want to fill the true info of a particle and not its daughters (e.g. missmatched cosmic particle)
       //get the daughter
       auto const ls_trueDau = pList[ls_truePart->Daughter(idau)];
+      //daughters not kept in the particle list (e.g. some EM shower particles)
+      if(!ls_trueDau)continue;
       //skip delta rays
       if(ls_trueDau->Process() == "compt"  || ls_trueDau->Process() == "eIoni" ||
 	 ls_trueDau->Process() == "hIoni"  || ls_trueDau->Process() == "muIoni" ||
@@ -781,7 +784,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
   if(fDebug)std::cout << "there are " << (*pfpHandle).size() << " PFP particles in this event" << std::endl;
 
   if(primaryParticles.size() == 0){
-    std::cout << "No primary particle found" << std::endl;
+    if(fDebug)std::cout << "No beam slice found" << std::endl;
     return;
   }
 
@@ -1194,14 +1197,23 @@ void highlandAnalysis::CreateHighlandMiniTree::FillUnassociatedHits(art::Event c
   auto const detProp = art::ServiceHandle<detinfo::DetectorPropertiesService const>()->DataFor(evt, *fClockData);
   const double r2 = fUnassociatedHitsRadius*fUnassociatedHitsRadius;
 
+  //wire coordinate of each end in each plane, computed once per plane
+  std::map<geo::PlaneID, std::vector<double>> endWires;
+
   for(const art::Ptr<recob::Hit>& ls_hit : fAllHits){
     if(used[ls_hit.key()])continue;
     const geo::PlaneID planeID = ls_hit->WireID().asPlaneID();
+    auto iw = endWires.find(planeID);
+    if(iw == endWires.end()){
+      std::vector<double> wires;
+      for(const geo::Point_t& e : ends)wires.push_back(geom->WireCoordinate(e, planeID));
+      iw = endWires.emplace(planeID, wires).first;
+    }
     const double pitch = geom->WirePitch(planeID);
     const double xhit  = detProp.ConvertTicksToX(ls_hit->PeakTime(), planeID);
     bool near = fFullDump;
     for(size_t i = 0; i < ends.size() && !near; i++){
-      const double dw = (ls_hit->WireID().Wire - geom->WireCoordinate(ends[i], planeID))*pitch;
+      const double dw = (ls_hit->WireID().Wire - iw->second[i])*pitch;
       const double dx = xhit - ends[i].X();
       near = dw*dw + dx*dx < r2;
     }
@@ -1266,7 +1278,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsInfo(art::Event const 
 //*****************************************************************************
 
   if(fDebug)std::cout << "filling cosmics info" << std::endl;
-  fBunch = bunch;
+  fBeamSliceEnds = GetBeamSliceEnds(bunch);
   
   //get vector of pfp particles
   auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
@@ -1320,7 +1332,7 @@ bool highlandAnalysis::CreateHighlandMiniTree::IsNearBeamSlice(const std::vector
 //*****************************************************************************
 
   //minimum distance between the space points and the ends of all the beam-slice particles
-  const std::vector<geo::Point_t> ends = GetBeamSliceEnds(fBunch);
+  const std::vector<geo::Point_t>& ends = fBeamSliceEnds;
   if(ends.empty())return false;
   const double r2 = fCosmicsRadius*fCosmicsRadius;
 
@@ -1430,17 +1442,14 @@ void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const
 
   //if not found among stored true particles, look for it on the pList
   //(not for cosmics with CosmicsTruthMode 0)
-  if(!found && (part->BeamOrigin || fCosmicsTruthMode > 0)){
+  if(!found && truePartID != -1 && (part->BeamOrigin || fCosmicsTruthMode > 0)){
     if(fDebug)std::cout << "matching true particle not found among previously stored trueparticles," << std::endl;
     const sim::ParticleList &pList = piServ->ParticleList();
-    for(auto const ls_truePart : pList){
-      if(ls_truePart.second->TrackId() == truePartID){
-	//if(fDebug)std::cout << "matching true particle found" << std::endl;
-	FillTruePartInfo(evt, pList, ls_truePart.second, trueParticles, NULL, -999, false);
-	part->TrueObject = trueParticles.back();
-	found = true;
-	break;
-      }
+    auto it = pList.find(truePartID);
+    if(it != pList.end() && it->second){
+      FillTruePartInfo(evt, pList, it->second, trueParticles, NULL, -999, false);
+      part->TrueObject = trueParticles.back();
+      found = true;
     }
   }
   
@@ -1485,11 +1494,8 @@ AnaTrueParticlePD* highlandAnalysis::CreateHighlandMiniTree::GetTrueParticle(std
 int highlandAnalysis::CreateHighlandMiniTree::GetTrueParticleIDFromPFP(art::Event const &evt, const recob::PFParticle* ls_part){
 //*****************************************************************************
 
-  //create a clock instance
-  auto const clockData = art::ServiceHandle<detinfo::DetectorClocksService>()->DataFor(evt);
-
   //look for the MCParticle that most probably generated the PFParticle
-  const simb::MCParticle* ls_truePart = truthUtil.GetMCParticleFromPFParticle(clockData, *ls_part, evt, fPFParticleTag);
+  const simb::MCParticle* ls_truePart = truthUtil.GetMCParticleFromPFParticle(*fClockData, *ls_part, evt, fPFParticleTag);
 
   if(ls_truePart)return ls_truePart->TrackId();
   else return -1;
@@ -1551,12 +1557,6 @@ void highlandAnalysis::CreateHighlandMiniTree::endJob(){
   //close PID file
   fPIDFile->Close();
 
-}
-
-//*****************************************************************************
-void highlandAnalysis::CreateHighlandMiniTree::reset(){
-//*****************************************************************************
-  
 }
 
 DEFINE_ART_MODULE(highlandAnalysis::CreateHighlandMiniTree)
