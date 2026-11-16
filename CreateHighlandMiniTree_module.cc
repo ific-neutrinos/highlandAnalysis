@@ -99,6 +99,8 @@ public:
 
   // ----------------------------
 
+  void BuildEventCaches    (art::Event const &evt);
+  void FillEventInfo       (art::Event const &evt, AnaEventInfoPD* info);
   void FillDQInfo          (art::Event const &evt, AnaDataQuality* dq);
   void FillBeamTrueInfo    (art::Event const &evt, AnaSpill* spill);
   void FillTruePartInfo    (art::Event const &evt, const sim::ParticleList &pList, const simb::MCParticle* ls_truePart,
@@ -265,54 +267,22 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
 void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
 //*****************************************************************************
 
-  //per-event caches
-  auto hitHandle = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
-  fAllHits.clear();
-  art::fill_ptr_vector(fAllHits, hitHandle);
-  auto trackHandle = evt.getValidHandle<std::vector<recob::Track>>(fTrackerTag);
-  fTrackHitMeta = std::make_unique<art::FindManyP<recob::Hit, recob::TrackHitMeta>>(trackHandle,evt,fTrackerTag);
-  fCNN = std::make_unique<anab::MVAReader<recob::Hit,4>>(evt, "emtrkmichelid:emtrkmichel");
-  auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
-  fPFPSpacePoints = std::make_unique<art::FindManyP<recob::SpacePoint>>(pfpHandle, evt, fPFParticleTag);
-  auto spHandle = evt.getValidHandle<std::vector<recob::SpacePoint>>(fPFParticleTag);
-  fSpacePointHits = std::make_unique<art::FindManyP<recob::Hit>>(spHandle, evt, fPFParticleTag);
-  fHitWires.reset();
-  if(fSaveHitSignal)fHitWires = std::make_unique<art::FindManyP<recob::Wire>>(hitHandle, evt, fHitTag);
-  fClockData.emplace(art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(evt));
-  fBeamPrimary = NULL;
-  fBunch = NULL;
-  fIsMC = !evt.isRealData();
-  fFillDetail = true;
-  fFullDump = fFullDumpPrescale > 0 && fNEvents % fFullDumpPrescale == 0;
-  fNEvents++;
+  //per-event caches and state
+  BuildEventCaches(evt);
 
   //create a spill for each event and fill event info
   //(owned here, so that it is deleted also in the early returns)
   std::unique_ptr<AnaSpillPD> owner(MakeSpill());
   AnaSpillPD* spill = owner.get();
   spill->EventInfo = MakeEventInfo();
- 
   AnaEventInfoPD& info = *static_cast<AnaEventInfoPD*>(spill->EventInfo);
-  info.Run    = evt.run();
-  info.SubRun = evt.subRun();
-  info.Event  = evt.id().event();
-  info.IsMC   = !evt.isRealData();
-  info.EventTime = evt.time().timeHigh();
-  info.NominalBeamMom = fNominalBeamMom;
-  info.EmptyEvent = pfpHandle->empty();
-  info.HasPandora = false; //set to true below if there is a beam slice
-
-  if(fDebug){
-    std::cout << "Run " << info.Run << ", event " << info.Event << ", MC = " << info.IsMC;
-    std::cout << ", Beam Mom = " << info.NominalBeamMom << std::endl;
-  }
+  FillEventInfo(evt, &info);
 
   //Events that fail a check are saved anyway, marked, for the normalization:
-  //  - bad beamline trigger: DataQuality->GoodDaq = false, empty Beam and bunch
+  //  - bad beamline trigger: DataQuality->GoodDaq = false, Beam but no bunch (the analyses
+  //    do not see them: highland creates the events from the bunches)
   //  - no true beam particle (MC): TrueParticles without the beam particle
-  //  - no beam slice: EventInfo->HasPandora = false, no beam-slice particles
-  //The spill has always a Beam (with BeamParticle) and one bunch: highlandPD assumes them
-  //(Bunches[0] in the corrections)
+  //  - no beam slice: EventInfo->HasPandora = false, a bunch without beam-slice particles
 
   //data quality and check
   spill->DataQuality = MakeDataQuality();
@@ -320,12 +290,14 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   bool goodDaq = static_cast<AnaDataQuality*>(spill->DataQuality)->GoodDaq;
   if(!goodDaq)mf::LogVerbatim("CreateHighlandMiniTree") << "Beam quality check failed, event saved as bad DAQ";
 
+  //beam related information, for all events. Each event counts as one spill: highland's
+  //CreateMiniTree adds the spills that it does not save to the next saved one
   spill->Beam = MakeBeam();
-  static_cast<AnaBeam*>(spill->Beam)->BeamParticle = MakeParticle();
-  AnaBunchPD* bunch = MakeBunch();
-  bunch->Bunch  = 1;
-  bunch->Weight = 1;
-  spill->Bunches.push_back(bunch);
+  AnaBeamPD* beam = static_cast<AnaBeamPD*>(spill->Beam);
+  beam->BeamParticle = MakeParticle();
+  beam->SpillsSincePreviousSavedSpill = 1;
+  beam->POTSincePreviousSavedSpill    = 0;
+  FillBeamInfo(evt, beam);
 
   if(goodDaq){
     //true info
@@ -337,13 +309,12 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
       if(fCosmicsTruthMode == 2)FillCosmicsTrueInfo(evt, spill->TrueParticles);
     }
 
-    //beam related information
-    FillBeamInfo(evt, static_cast<AnaBeamPD*>(spill->Beam));
-    //if it is a mc event, match the primary particle with the beam particle
-    if(info.IsMC && fBeamPrimary && !spill->TrueParticles.empty())
-      static_cast<AnaBeam*>(spill->Beam)->BeamParticle->TrueObject = spill->TrueParticles.at(0);
+    //MC: the beam instrumentation information comes from the true beam particle
+    if(fBeamPrimary)beam->BeamParticle->TrueObject = GetTrueParticle(spill->TrueParticles, fBeamPrimary->TrackId());
 
     //Fill each bunch info (we have only one in PD)
+    AnaBunchPD* bunch = MakeBunch();
+    spill->Bunches.push_back(bunch);
     FillBunchInfo(evt, spill->TrueParticles, bunch, spill);
     info.HasPandora = !bunch->Particles.empty();
     if(!info.HasPandora)mf::LogVerbatim("CreateHighlandMiniTree") << "No beam slice, event saved without beam particles";
@@ -363,6 +334,53 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   fTree->Fill();
   delete fspill;
   fspill = NULL;
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const &evt){
+//*****************************************************************************
+
+  //products and associations used many times per event
+  auto hitHandle = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
+  fAllHits.clear();
+  art::fill_ptr_vector(fAllHits, hitHandle);
+  auto trackHandle = evt.getValidHandle<std::vector<recob::Track>>(fTrackerTag);
+  fTrackHitMeta = std::make_unique<art::FindManyP<recob::Hit, recob::TrackHitMeta>>(trackHandle,evt,fTrackerTag);
+  fCNN = std::make_unique<anab::MVAReader<recob::Hit,4>>(evt, "emtrkmichelid:emtrkmichel");
+  auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
+  fPFPSpacePoints = std::make_unique<art::FindManyP<recob::SpacePoint>>(pfpHandle, evt, fPFParticleTag);
+  auto spHandle = evt.getValidHandle<std::vector<recob::SpacePoint>>(fPFParticleTag);
+  fSpacePointHits = std::make_unique<art::FindManyP<recob::Hit>>(spHandle, evt, fPFParticleTag);
+  fHitWires.reset();
+  if(fSaveHitSignal)fHitWires = std::make_unique<art::FindManyP<recob::Wire>>(hitHandle, evt, fHitTag);
+  fClockData.emplace(art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(evt));
+
+  //per-event state
+  fBeamPrimary = NULL;
+  fBunch = NULL;
+  fIsMC = !evt.isRealData();
+  fFillDetail = true;
+  fFullDump = fFullDumpPrescale > 0 && fNEvents % fFullDumpPrescale == 0;
+  fNEvents++;
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::FillEventInfo(art::Event const &evt, AnaEventInfoPD* info){
+//*****************************************************************************
+
+  info->Run       = evt.run();
+  info->SubRun    = evt.subRun();
+  info->Event     = evt.id().event();
+  info->IsMC      = !evt.isRealData();
+  info->EventTime = evt.time().timeHigh();
+  info->NominalBeamMom = fNominalBeamMom;
+  info->EmptyEvent = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag)->empty();
+  info->HasPandora = false; //set to true in analyze() if there is a beam slice
+
+  if(fDebug){
+    std::cout << "Run " << info->Run << ", event " << info->Event << ", MC = " << info->IsMC;
+    std::cout << ", Beam Mom = " << info->NominalBeamMom << std::endl;
+  }
 }
 
 //*****************************************************************************
