@@ -308,15 +308,24 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   }
 
   //Events that fail a check are saved anyway, marked, for the normalization:
-  //  - bad beamline trigger: DataQuality->GoodDaq = false, only event info is saved
+  //  - bad beamline trigger: DataQuality->GoodDaq = false, empty Beam and bunch
   //  - no true beam particle (MC): TrueParticles without the beam particle
   //  - no beam slice: EventInfo->HasPandora = false, no beam-slice particles
+  //The spill has always a Beam (with BeamParticle) and one bunch: highlandPD assumes them
+  //(Bunches[0] in the corrections)
 
   //data quality and check
   spill->DataQuality = MakeDataQuality();
   FillDQInfo(evt,static_cast<AnaDataQuality*>(spill->DataQuality));
   bool goodDaq = static_cast<AnaDataQuality*>(spill->DataQuality)->GoodDaq;
   if(!goodDaq)mf::LogVerbatim("CreateHighlandMiniTree") << "Beam quality check failed, event saved as bad DAQ";
+
+  spill->Beam = MakeBeam();
+  static_cast<AnaBeam*>(spill->Beam)->BeamParticle = MakeParticle();
+  AnaBunchPD* bunch = MakeBunch();
+  bunch->Bunch  = 1;
+  bunch->Weight = 1;
+  spill->Bunches.push_back(bunch);
 
   if(goodDaq){
     //true info
@@ -329,15 +338,12 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
     }
 
     //beam related information
-    spill->Beam = MakeBeam();
     FillBeamInfo(evt, static_cast<AnaBeamPD*>(spill->Beam));
     //if it is a mc event, match the primary particle with the beam particle
     if(info.IsMC && fBeamPrimary && !spill->TrueParticles.empty())
       static_cast<AnaBeam*>(spill->Beam)->BeamParticle->TrueObject = spill->TrueParticles.at(0);
 
     //Fill each bunch info (we have only one in PD)
-    AnaBunchPD* bunch = MakeBunch();
-    spill->Bunches.push_back(bunch);
     FillBunchInfo(evt, spill->TrueParticles, bunch, spill);
     info.HasPandora = !bunch->Particles.empty();
     if(!info.HasPandora)mf::LogVerbatim("CreateHighlandMiniTree") << "No beam slice, event saved without beam particles";
@@ -500,9 +506,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBeamInfo(art::Event const &ev
   art::Handle<std::vector<beam::ProtoDUNEBeamEvent>> beamHandle;
   std::vector<art::Ptr<beam::ProtoDUNEBeamEvent>> beamVec;
   if(evt.getByLabel(beamtag, beamHandle))art::fill_ptr_vector(beamVec, beamHandle);
-
-  //create the beam particle (also if there is no beam event, the analysis expects it)
-  beam->BeamParticle = MakeParticle();
 
   if(beamVec.empty()){
     mf::LogVerbatim("CreateHighlandMiniTree") << "No beam event found";
