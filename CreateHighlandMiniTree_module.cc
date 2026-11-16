@@ -44,6 +44,8 @@
 #include "lardata/DetectorInfoServices/DetectorClocksService.h"
 #include "lardataobj/RecoBase/Cluster.h"
 #include "lardataobj/AnalysisBase/T0.h"
+#include "lardataobj/RawData/RDTimeStamp.h"
+#include "duneprototypes/Protodune/singlephase/DataUtils/ProtoDUNEDataUtils.h"
 #include "lardata/DetectorInfoServices/DetectorPropertiesService.h"
 #include "lardata/ArtDataHelper/MVAReader.h"
 #include "lardataobj/RecoBase/Wire.h"
@@ -92,7 +94,7 @@ public:
   AnaSpillPD*         MakeSpill()       { return new AnaSpillPD(); }
   AnaBunchPD*         MakeBunch()       { return new AnaBunchPD(); }
   AnaBeamPD*          MakeBeam()        { return new AnaBeamPD(); }
-  AnaDataQualityB*    MakeDataQuality() { return new AnaDataQuality(); }
+  AnaDataQualityPD*   MakeDataQuality() { return new AnaDataQualityPD(); }
   AnaEventInfoPD*     MakeEventInfo()   { return new AnaEventInfoPD(); }
 
   AnaTrueParticlePD*  MakeTrueParticle(){ return new AnaTrueParticlePD(); }
@@ -103,7 +105,9 @@ public:
 
   void BuildEventCaches    (art::Event const &evt);
   void FillEventInfo       (art::Event const &evt, AnaEventInfoPD* info);
-  void FillDQInfo          (art::Event const &evt, AnaDataQuality* dq);
+  void FillDQInfo          (art::Event const &evt, AnaDataQualityPD* dq);
+  void FillForcedTrack     (art::Event const &evt, const recob::PFParticle* ls_part, AnaParticlePD* part);
+  void FillTrueHitCounts   (std::vector<AnaTrueParticleB*>& trueParticles);
   void FillBeamTrueInfo    (art::Event const &evt, AnaSpill* spill);
   void FillTruePartInfo    (art::Event const &evt, const sim::ParticleList &pList, const simb::MCParticle* ls_truePart,
 			    std::vector<AnaTrueParticleB*> &trueParticles, AnaTrueParticlePD* parent, 
@@ -167,6 +171,11 @@ private:
   std::unique_ptr<art::FindManyP<recob::SpacePoint>> fPFPSpacePoints;
   std::unique_ptr<art::FindManyP<recob::Hit>> fSpacePointHits;
   std::unique_ptr<art::FindManyP<recob::Wire>> fHitWires;
+  // MC truth of all the hits (SaveTrueHitCounts): dominant particle of each hit (index = key),
+  // hits per plane where each particle dominates and energy it deposits in the collection plane
+  std::vector<int> fHitTrueID;
+  std::map<int, std::array<int,3>> fTrueNHits;
+  std::map<int, float> fTrueEDep;
   std::optional<detinfo::DetectorClocksData> fClockData;
 
   // fcl parameters
@@ -201,6 +210,12 @@ private:
   double      fUnassociatedHitsRadius; // cm, 2D distance in each plane
   std::set<int> fTrueTrajPDGs;
   bool        fSaveHitSignal;
+  bool        fSaveForcedTracks;     // track fit forced on PFParticles without track
+  std::string fForcedTrackTag;
+  std::string fForcedCalorimetryTag;
+  bool        fSaveTrueHitCounts;    // backtrack all the hits of the event (MC)
+  protoana::ProtoDUNEDataUtils fDataUtils;
+  std::vector<std::pair<UInt_t,UInt_t>> fUnstableHVTimeRanges; // same list as the unstable HV filter
   int         fFullDumpPrescale; // complete dump in 1 of every N events (0 = never)
   
   int         fMaxGeneration;
@@ -258,6 +273,12 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fSaveUnassociatedHits(p.get<bool>("SaveUnassociatedHits", true)),
   fUnassociatedHitsRadius(p.get<double>("UnassociatedHitsRadius", 30.)),
   fSaveHitSignal(p.get<bool>("SaveHitSignal", false)),
+  fSaveForcedTracks(p.get<bool>("SaveForcedTracks", true)),
+  fForcedTrackTag(p.get<std::string>("ForcedTrackTag", "pandora2Track")),
+  fForcedCalorimetryTag(p.get<std::string>("ForcedCalorimetryTag", "pandora2cali")),
+  fSaveTrueHitCounts(p.get<bool>("SaveTrueHitCounts", true)),
+  fDataUtils(p.get<fhicl::ParameterSet>("DataUtils")),
+  fUnstableHVTimeRanges(p.get<std::vector<std::pair<UInt_t,UInt_t>>>("UnstableHVTimeRanges")),
   fFullDumpPrescale(p.get<int>("FullDumpPrescale", 0)),
 
   fMaxGeneration(p.get<int>("MaxGeneration")),
@@ -358,6 +379,9 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
     if(fCosmicsMode > 0 || fFullDump)FillCosmicsInfo(evt, spill->TrueParticles, bunch);
   }
 
+  //hits and deposited energy of each saved true particle
+  if(info.IsMC && fSaveTrueHitCounts)FillTrueHitCounts(spill->TrueParticles);
+
   //clone the new spill (RedoLinks), fill the tree and delete the clone
   fspill = spill->Clone();
   fTree->Fill();
@@ -383,6 +407,30 @@ void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const
   fHitWires.reset();
   if(fSaveHitSignal)fHitWires = std::make_unique<art::FindManyP<recob::Wire>>(hitHandle, evt, fHitTag);
   fClockData.emplace(art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(evt));
+
+  //MC truth of all the hits, in a single pass
+  fHitTrueID.clear();
+  fTrueNHits.clear();
+  fTrueEDep.clear();
+  if(!evt.isRealData() && fSaveTrueHitCounts){
+    art::ServiceHandle<cheat::BackTrackerService> bt;
+    fHitTrueID.assign(fAllHits.size(), -999);
+    for(const art::Ptr<recob::Hit>& h : fAllHits){
+      const int plane = h->WireID().Plane;
+      float emax = -1;
+      for(const sim::TrackIDE& ide : bt->HitToTrackIDEs(*fClockData, h)){
+	if(ide.energy > emax){
+	  emax = ide.energy;
+	  fHitTrueID[h.key()] = ide.trackID;
+	}
+	if(plane == 2)fTrueEDep[ide.trackID] += ide.energy;
+      }
+      if(emax >= 0 && plane >= 0 && plane < 3){
+	auto it = fTrueNHits.emplace(fHitTrueID[h.key()], std::array<int,3>{{0,0,0}}).first;
+	it->second[plane]++;
+      }
+    }
+  }
 
   //per-event state
   fBeamPrimary = NULL;
@@ -413,7 +461,114 @@ void highlandAnalysis::CreateHighlandMiniTree::FillEventInfo(art::Event const &e
 }
 
 //*****************************************************************************
-void highlandAnalysis::CreateHighlandMiniTree::FillDQInfo(art::Event const &evt, AnaDataQuality* dq){
+void highlandAnalysis::CreateHighlandMiniTree::FillDQInfo(art::Event const &evt, AnaDataQualityPD* dq){
+//*****************************************************************************
+
+  if(fDebug)std::cout << "Filling data quality info" << std::endl;
+
+  //associate trigger quality to data quality. Only for data, MC is always good.
+  if(evt.isRealData())dq->GoodDaq = fBeamlineUtils.IsGoodBeamlineTrigger(evt);
+  else dq->GoodDaq = true;
+
+  if(!evt.isRealData())return;
+
+  //what the FEMB filter checks (ProtoDUNEFembFilter): active FEMBs per APA and timestamp consistency
+  for(int apa = 0; apa < 6; apa++)dq->NActiveFembs[apa] = fDataUtils.GetNActiveFembsForAPA(evt, apa);
+  ULong64_t ts = 0, ts2 = 0;
+  int apainconsist = 0;
+  dq->TimeStampConsistent         = fDataUtils.CheckTimeStampConsistencyForAPAs(evt, {0,1,2,3,4,5}, ts, ts2, apainconsist);
+  dq->TimeStampConsistentBeamSide = fDataUtils.CheckTimeStampConsistencyForAPAs(evt, {0,2,4}, ts, ts2, apainconsist);
+
+  //what the unstable HV filter checks (ProtoDUNEUnstableHVFilter): time from the timing system in
+  //an unstable period. The filter compares whole seconds
+  art::Handle<std::vector<raw::RDTimeStamp>> tsHandle;
+  if(evt.getByLabel(art::InputTag("timingrawdecoder","daq"), tsHandle) && !tsHandle->empty()){
+    dq->TimingTimeStamp = 20.e-9*tsHandle->front().GetTimeStamp();
+    const UInt_t sec = (UInt_t)std::floor(dq->TimingTimeStamp);
+    dq->UnstableHV = false;
+    for(const auto& range : fUnstableHVTimeRanges)
+      if(sec > range.first && sec < range.second){dq->UnstableHV = true; break;}
+  }
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::FillTrueHitCounts(std::vector<AnaTrueParticleB*>& trueParticles){
+//*****************************************************************************
+
+  //0 hits and 0 energy if the particle does not dominate any hit: not seen in the TPC
+  for(AnaTrueParticleB* tb : trueParticles){
+    AnaTrueParticlePD* tp = static_cast<AnaTrueParticlePD*>(tb);
+    auto inh = fTrueNHits.find(tp->ID);
+    for(int i = 0; i < 3; i++)tp->NHitsTrue[i] = inh != fTrueNHits.end() ? inh->second[i] : 0;
+    auto ie = fTrueEDep.find(tp->ID);
+    tp->EDepTrue = ie != fTrueEDep.end() ? ie->second : 0;
+  }
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::FillForcedTrack(art::Event const &evt, const recob::PFParticle* ls_part, AnaParticlePD* part){
+//*****************************************************************************
+
+  //track fit forced on all the PFParticles (pandora2Track), for the shower-like ones: kept apart
+  //in AnaForcedTrackPD so that the analyses do not change
+  part->ForcedTrack.clear();
+  const recob::Track* track = pfpUtil.GetPFParticleTrack(*ls_part, evt, fPFParticleTag, fForcedTrackTag);
+  if(!track)return;
+
+  AnaForcedTrackPD ft;
+  ft.ID = track->ID();
+  const auto start = track->Start();
+  const auto end   = track->End();
+  const auto dirS  = track->StartDirection();
+  const auto dirE  = track->EndDirection();
+  ft.PositionStart[0]  = start.X(); ft.PositionStart[1]  = start.Y(); ft.PositionStart[2]  = start.Z();
+  ft.PositionEnd[0]    = end.X();   ft.PositionEnd[1]    = end.Y();   ft.PositionEnd[2]    = end.Z();
+  ft.DirectionStart[0] = dirS.X();  ft.DirectionStart[1] = dirS.Y();  ft.DirectionStart[2] = dirS.Z();
+  ft.DirectionEnd[0]   = dirE.X();  ft.DirectionEnd[1]   = dirE.Y();  ft.DirectionEnd[2]   = dirE.Z();
+  ft.Length = track->Length();
+
+  for(size_t i = 0; i < track->NumberTrajectoryPoints(); i++){
+    AnaTrajectoryPointPD tjp;
+    auto pos = track->LocationAtPoint(i);
+    auto dir = track->DirectionAtPoint(i);
+    tjp.Position_NoSCE.SetXYZ(pos.X(),pos.Y(),pos.Z());
+    tjp.Direction_NoSCE.SetXYZ(dir.X(),dir.Y(),dir.Z());
+    if(tjp.IsValid())ft.TrjPoints.push_back(tjp);
+  }
+
+  //calorimetry (with SCE corrections, as Hits of the tracks)
+  std::vector<double> dEdx, ResRange;
+  for(const anab::Calorimetry& cal : trackUtil.GetRecoTrackCalorimetry(*track, evt, fForcedTrackTag, fForcedCalorimetryTag)){
+    const int plane = cal.PlaneID().Plane;
+    if(plane < 0 || plane > 2)continue;
+    if(plane != 2 && !fSaveHitsAllPlanes)continue;
+    for(size_t ihit = 0; ihit < cal.dQdx().size(); ihit++){
+      AnaHitPD hit;
+      hit.dQdx          = cal.dQdx().at(ihit);
+      hit.dEdx          = cal.dEdx().at(ihit);
+      hit.ResidualRange = cal.ResidualRange().at(ihit);
+      hit.Pitch         = cal.TrkPitchVec().at(ihit);
+      hit.Position.SetXYZ(cal.XYZ().at(ihit).X(), cal.XYZ().at(ihit).Y(), cal.XYZ().at(ihit).Z());
+      const size_t tp = cal.TpIndices().at(ihit);
+      if(tp < fAllHits.size())FillHitRawInfo(fAllHits[tp], hit);
+      ft.Hits[plane].push_back(hit);
+      if(plane == 2){
+	dEdx.push_back(hit.dEdx);
+	ResRange.push_back(hit.ResidualRange);
+      }
+    }
+  }
+  if(!dEdx.empty()){
+    std::pair<double,int> proton_PID = trackUtil.Chi2PID(dEdx,ResRange,PIDProfiles[2212]);
+    std::pair<double,int> muon_PID   = trackUtil.Chi2PID(dEdx,ResRange,PIDProfiles[13]  );
+    ft.Chi2Proton = proton_PID.first;
+    ft.Chi2Muon   = muon_PID.first;
+    ft.Chi2ndf    = proton_PID.second;
+  }
+
+  part->ForcedTrack.push_back(ft);
+}
+
 //*****************************************************************************
 
   if(fDebug)std::cout << "Filling data quality info" << std::endl;
@@ -692,6 +847,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   //Hits do not change), and 3D space points (for tracks only if SaveTrackSpacePoints: they
   //are the raw positions of their trajectory points)
   if(fFillDetail){
+    if(!track && fSaveForcedTracks)FillForcedTrack(evt, ls_part, part);
     if(fSaveHitsAllPlanes)FillPFParticleHits(ls_part_hits, part);
     if(fSaveSpacePoints && (!track || fSaveTrackSpacePoints))FillSpacePoints(ls_part, part);
   }
@@ -873,6 +1029,9 @@ void highlandAnalysis::CreateHighlandMiniTree::FillHitRawInfo(const art::Ptr<rec
   hit.PeakAmplitude     = ls_hit->PeakAmplitude();
   hit.StartTick         = ls_hit->StartTick();
   hit.EndTick           = ls_hit->EndTick();
+  hit.RMS               = ls_hit->RMS();
+  hit.GoodnessOfFit     = ls_hit->GoodnessOfFit();
+  hit.Multiplicity      = ls_hit->Multiplicity();
 
   //CNN score of the hit: track, em, michel
   std::array<float,4> cnn_out = fCNN->getOutput(ls_hit);
@@ -880,8 +1039,12 @@ void highlandAnalysis::CreateHighlandMiniTree::FillHitRawInfo(const art::Ptr<rec
   hit.CNN[1] = cnn_out[ fCNN->getIndex("em") ];
   hit.CNN[2] = cnn_out[ fCNN->getIndex("michel") ];
 
-  //true particle that deposits most energy in the hit
-  if(fIsMC && fClockData){
+  //true particle that deposits most energy in the hit (computed for all the hits in BuildEventCaches,
+  //or here if SaveTrueHitCounts is off)
+  if(!fHitTrueID.empty()){
+    if(ls_hit.key() < fHitTrueID.size())hit.TrueID = fHitTrueID[ls_hit.key()];
+  }
+  else if(fIsMC && fClockData){
     art::ServiceHandle<cheat::BackTrackerService> bt;
     float emax = -1;
     for(const sim::TrackIDE& ide : bt->HitToTrackIDEs(*fClockData, ls_hit)){
@@ -956,6 +1119,10 @@ void highlandAnalysis::CreateHighlandMiniTree::FillPandoraInfo(art::Event const 
 
   const std::vector<anab::T0> t0 = pfpUtil.GetPFParticleT0(*ls_part, evt, fPFParticleTag);
   if(!t0.empty())part->T0 = t0[0].Time();
+
+  part->BeamCosmicScore = pfpUtil.GetBeamCosmicScore(*ls_part, evt, fPFParticleTag);
+  const TVector3 vtx = pfpUtil.GetPFParticleVertex(*ls_part, evt, fPFParticleTag, fTrackerTag);
+  for(int i = 0; i < 3; i++)part->PandoraVertex[i] = vtx[i];
 }
 
 //*****************************************************************************
@@ -1064,8 +1231,10 @@ void highlandAnalysis::CreateHighlandMiniTree::FillShowerInfo(const recob::Showe
   
   part->Length = shower->Length();
 
-  //probably there are many other variables to add here but I don't need them for kaon analysis.
-  //they will be added as needed/requested
+  //energy and dE/dx for each plane, and opening angle
+  for(size_t i = 0; i < 3 && i < shower->Energy().size(); i++)part->ShowerEnergy[i] = shower->Energy()[i];
+  for(size_t i = 0; i < 3 && i < shower->dEdx().size(); i++)  part->ShowerdEdx[i]   = shower->dEdx()[i];
+  if(shower->has_open_angle())part->ShowerOpeningAngle = shower->OpenAngle();
 }
 
 //*****************************************************************************

@@ -1,6 +1,8 @@
 #include "trackfinderalgorithms.fcl"
 #include "ProtoDUNEBeamlineUtils.fcl"
 #include "ProtoDUNECalibration.fcl"
+#include "ProtoDUNEDataUtils.fcl"
+#include "ProtoDUNEUnstableHVFilter.fcl"
 
 BEGIN_PROLOG
 
@@ -49,6 +51,14 @@ highlandAnalysis:
   UnassociatedHitsRadius: 30.    # cm, 2D distance (wire, drift) in each plane
   TrueTrajPDGs:           [321, -321] # true trajectory (the beam particle is always saved)
   SaveHitSignal:          false  # waveform of each hit
+  SaveForcedTracks:       true   # track fit forced on the PFParticles without track (shower-like)
+  ForcedTrackTag:         "pandora2Track"
+  ForcedCalorimetryTag:   "pandora2cali"
+  SaveTrueHitCounts:      true   # MC: backtrack all the hits (TrueID, NHitsTrue, EDepTrue of the true particles)
+
+  # data quality: what the FEMB and unstable HV filters check, saved instead of filtering (data only)
+  DataUtils:              @local::standard_protodunedatautils
+  UnstableHVTimeRanges:   @local::HVfilter.TimeRanges
   FullDumpPrescale:       0      # complete dump in 1 of every N events (0 = never)
 
   Debug:                false
