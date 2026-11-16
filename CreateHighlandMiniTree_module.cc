@@ -179,6 +179,7 @@ private:
 
   bool        fSaveHitsAllPlanes;
   bool        fSaveSpacePoints;
+  bool        fSaveTrackSpacePoints; // also for tracks (one per hit with 3D, like their trajectory points)
   int         fCosmicsMode;      // 0 none, 1 summary, 2 complete near the beam slice, 3 complete
   double      fCosmicsRadius;    // cm, for CosmicsMode 2
   int         fCosmicsTruthMode; // 0 none, 1 only cosmics matched to saved reco objects, 2 all
@@ -231,6 +232,7 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
 
   fSaveHitsAllPlanes(p.get<bool>("SaveHitsAllPlanes", true)),
   fSaveSpacePoints(p.get<bool>("SaveSpacePoints", true)),
+  fSaveTrackSpacePoints(p.get<bool>("SaveTrackSpacePoints", false)),
   // the old Cosmics flag saved every primary PFParticle completely
   fCosmicsMode(p.get<int>("CosmicsMode", p.get<bool>("Cosmics", false) ? 3 : 0)),
   fCosmicsRadius(p.get<double>("CosmicsRadius", 50.)),
@@ -660,10 +662,11 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   else if(shower)FillShowerInfo(shower,part);
 
   //hits of the PFParticle not saved with calorimetry (HitsNoCalo, so that the analyses using
-  //Hits do not change), and 3D space points of the PFParticles without track
+  //Hits do not change), and 3D space points (for tracks only if SaveTrackSpacePoints: they
+  //are the raw positions of their trajectory points)
   if(fFillDetail){
-    if(fSaveHitsAllPlanes)        FillPFParticleHits(ls_part_hits, part);
-    if(!track && fSaveSpacePoints)FillSpacePoints(ls_part, part);
+    if(fSaveHitsAllPlanes)FillPFParticleHits(ls_part_hits, part);
+    if(fSaveSpacePoints && (!track || fSaveTrackSpacePoints))FillSpacePoints(ls_part, part);
   }
 
   //go for CNN (outputs: track, em, michel, none), plane 2

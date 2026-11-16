@@ -30,6 +30,7 @@ highlandAnalysis:
   # ---- what to save (phase2.md) ----
   SaveHitsAllPlanes:      true   # calorimetry hits of the three planes (Hits) and the rest of hits of the PFParticle (HitsNoCalo); false: only collection plane of tracks
   SaveSpacePoints:        true   # 3D space points of the PFParticles without track
+  SaveTrackSpacePoints:   false  # also for tracks (raw positions of their trajectory points, one per hit with 3D)
   CosmicsMode:            2      # 0 none, 1 summary (no hits/trajectory/space points), 2 complete near the beam slice, 3 complete
   CosmicsRadius:          50.    # cm, distance to the ends of the beam slice for CosmicsMode 2
   CosmicsTruthMode:       1      # 0 none, 1 only cosmics matched to saved reco objects, 2 all
