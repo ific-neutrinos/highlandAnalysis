@@ -8,6 +8,9 @@
 ////////////////////////////////////////////////////////////////////////
 
 #include<unistd.h>
+#include <array>
+#include <map>
+#include <memory>
 
 //basic includes
 #include "art/Framework/Core/EDAnalyzer.h"
@@ -116,13 +119,10 @@ public:
 
   bool IsInterestingCosmic(art::Event const &evt, const recob::PFParticle* ls_part);
 
-  const simb::MCParticle* GetGeantGoodParticle(const simb::MCParticle &mcTruth);
-
-  std::pair<float*,int> GetCNNOutputFromPFParticleFromPlane(const art::Event &evt, 
-							    const anab::MVAReader<recob::Hit,4> &CNN_results,
-							    protoana::ProtoDUNEPFParticleUtils& pfpUtil,
-							    const recob::PFParticle &part,
-							    int planeID);
+  /// Summed CNN output (track, em, michel, none) of the hits of a PFParticle in one plane, and number of hits
+  std::pair<std::array<float,4>,int> GetCNNOutputFromPFParticleFromPlane(const art::Event &evt,
+									  const recob::PFParticle &part,
+									  int planeID);
   
   void WasteTime();
 
@@ -134,6 +134,11 @@ private:
   AnaSpillPD* fspill;
 
   std::map<int,TProfile*> PIDProfiles;
+
+  // per-event caches, built once at the beginning of analyze()
+  std::vector<art::Ptr<recob::Hit>> fAllHits;  // all hits of the event (index = key)
+  std::unique_ptr<art::FindManyP<recob::Hit, recob::TrackHitMeta>> fTrackHitMeta;
+  std::unique_ptr<anab::MVAReader<recob::Hit,4>> fCNN;
   
   // fcl parameters
   std::string fBeamModuleLabel;
@@ -212,8 +217,18 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
 void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
 //*****************************************************************************
 
+  //per-event caches
+  auto hitHandle = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
+  fAllHits.clear();
+  art::fill_ptr_vector(fAllHits, hitHandle);
+  auto trackHandle = evt.getValidHandle<std::vector<recob::Track>>(fTrackerTag);
+  fTrackHitMeta = std::make_unique<art::FindManyP<recob::Hit, recob::TrackHitMeta>>(trackHandle,evt,fTrackerTag);
+  fCNN = std::make_unique<anab::MVAReader<recob::Hit,4>>(evt, "emtrkmichelid:emtrkmichel");
+
   //create a spill for each event and fill event info
-  AnaSpillPD* spill = MakeSpill();
+  //(owned here, so that it is deleted also in the early returns)
+  std::unique_ptr<AnaSpillPD> owner(MakeSpill());
+  AnaSpillPD* spill = owner.get();
   spill->EventInfo = MakeEventInfo();
  
   AnaEventInfoPD& info = *static_cast<AnaEventInfoPD*>(spill->EventInfo);
@@ -273,13 +288,11 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   //waste time if needed
   if(fWasteTime)WasteTime();
 
-  //if spill has been correctly saved, delete previous one
-  if(fspill)delete fspill;
-  fspill = NULL;
-
-  //clone the new spill and fill the three
+  //clone the new spill (RedoLinks), fill the tree and delete the clone
   fspill = spill->Clone();
   fTree->Fill();
+  delete fspill;
+  fspill = NULL;
 }
 
 //*****************************************************************************
@@ -367,14 +380,18 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
   truePart->Direction[1] = ls_truePart->Py()/ls_truePart->P();
   truePart->Direction[2] = ls_truePart->Pz()/ls_truePart->P();
 
+  //the last trajectory point has zero momentum for stopping particles: use the one before
   size_t np = ls_truePart->NumberTrajectoryPoints();
+  size_t iend = np >= 2 ? np-2 : 0;
 
-  truePart->DirectionEnd[0] = ls_truePart->Px(np-2)/ls_truePart->P(np-2);
-  truePart->DirectionEnd[1] = ls_truePart->Py(np-2)/ls_truePart->P(np-2);
-  truePart->DirectionEnd[2] = ls_truePart->Pz(np-2)/ls_truePart->P(np-2);
+  if(ls_truePart->P(iend) > 0){
+    truePart->DirectionEnd[0] = ls_truePart->Px(iend)/ls_truePart->P(iend);
+    truePart->DirectionEnd[1] = ls_truePart->Py(iend)/ls_truePart->P(iend);
+    truePart->DirectionEnd[2] = ls_truePart->Pz(iend)/ls_truePart->P(iend);
+  }
 
   truePart->Momentum = ls_truePart->P();
-  truePart->MomentumEnd = ls_truePart->P(np-2);
+  truePart->MomentumEnd = ls_truePart->P(iend);
 
   //increment generation
   generation++;
@@ -529,16 +546,17 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   const recob::Track*  track  = pfpUtil.GetPFParticleTrack(*ls_part,evt,fPFParticleTag,fTrackerTag);
   const recob::Shower* shower = pfpUtil.GetPFParticleShower(*ls_part,evt,fPFParticleTag,fShowerTag);
 
-  //fill track-like info or showerlike info
-  if(track) FillTrackInfo(evt,track,part);
-  if(shower)FillShowerInfo(shower,part);
+  //fill track-like or shower-like info. If the PFParticle has both, the track wins
+  //(FillShowerInfo would overwrite Type, positions, direction and length)
+  if(track)part->TrackID  = track->ID();
+  if(shower)part->ShowerID = shower->ID();
+  if(track)      FillTrackInfo(evt,track,part);
+  else if(shower)FillShowerInfo(shower,part);
 
-  //go for CNN
-  //CNN Outputs: Track, EM, Michel, Empty
-  anab::MVAReader<recob::Hit,4> mvaReader(evt, "emtrkmichelid:emtrkmichel");
-  //get cnn for plane 2
-  std::pair<float*, int> cnnResult = GetCNNOutputFromPFParticleFromPlane(evt, mvaReader, pfpUtil, *ls_part, 2);
-  for(int i = 0; i < 3; i++)part->CNNscore[i] = cnnResult.first[i] / cnnResult.second;
+  //go for CNN (outputs: track, em, michel, none), plane 2
+  std::pair<std::array<float,4>,int> cnnResult = GetCNNOutputFromPFParticleFromPlane(evt, *ls_part, 2);
+  if(cnnResult.second > 0)
+    for(int i = 0; i < 3; i++)part->CNNscore[i] = cnnResult.first[i] / cnnResult.second;
 
   //increment generation
   generation++;
@@ -624,24 +642,18 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
     return;
   }
 
-  //get a handle of all hits
-  auto hitHandle = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
-  std::vector<art::Ptr<recob::Hit>> hitVec;
-  art::fill_ptr_vector(hitVec, hitHandle);
-  
-  //get the hits and metadata associated to every track in the event for SCE pitch correction (probably this could be done globally only once)
-  auto trackHandle = evt.getValidHandle<std::vector<recob::Track>>(fTrackerTag);
-  std::vector<art::Ptr<recob::Track>> trackVec;
-  art::fill_ptr_vector(trackVec, trackHandle);
-  art::FindManyP<recob::Hit, recob::TrackHitMeta> fmthm(trackHandle,evt,fTrackerTag); 
-  
-  std::vector<const recob::TrackHitMeta*, std::allocator<const recob::TrackHitMeta*>> metaVec;
-  std::vector<art::Ptr<recob::Hit>> hitVec2;
-  //get metadata for this track
-  if(fmthm.isValid()){
-    metaVec = fmthm.data(track->ID());
-    hitVec2 = fmthm.at(track->ID());
+  //hits and metadata of this track (for the direction at each hit), indexed by hit key
+  std::map<size_t, const recob::TrackHitMeta*> metaByHitKey;
+  if(fTrackHitMeta->isValid()){
+    const auto& metaVec = fTrackHitMeta->data(track->ID());
+    const auto& hitVec2 = fTrackHitMeta->at(track->ID());
+    for(size_t iss = 0; iss < hitVec2.size(); iss++)metaByHitKey[hitVec2[iss].key()] = metaVec[iss];
   }
+
+  //calo and calonosce do not necessarily have the same hits in the same order: match them by hit index
+  std::map<size_t, size_t> nosceByTp;
+  for(size_t i = 0; i < calonosce[plane_index_nosce].TpIndices().size(); i++)
+    nosceByTp[calonosce[plane_index_nosce].TpIndices()[i]] = i;
 
   //number of hits
   part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
@@ -666,27 +678,28 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
 			calo[plane_index].XYZ().at(ihit).Y(), 
 			calo[plane_index].XYZ().at(ihit).Z());
 
-    //fill raw calorimetry info
-    hit.dQdx_NoSCE          = calonosce[plane_index_nosce].dQdx().at(ihit);
-    hit.dEdx_NoSCE          = calonosce[plane_index_nosce].dEdx().at(ihit);
-    hit.ResidualRange_NoSCE = calonosce[plane_index].ResidualRange().at(ihit);
-    hit.Pitch_NoSCE         = calonosce[plane_index_nosce].TrkPitchVec().at(ihit);
-    hit.Position_NoSCE.SetXYZ(calonosce[plane_index_nosce].XYZ().at(ihit).X(),
-			      calonosce[plane_index_nosce].XYZ().at(ihit).Y(),
-			      calonosce[plane_index_nosce].XYZ().at(ihit).Z());
+    //fill raw calorimetry info, from the same hit in the no-SCE calorimetry (if there)
+    const size_t tp = calo[plane_index].TpIndices().at(ihit);
+    auto inosce = nosceByTp.find(tp);
+    if(inosce != nosceByTp.end()){
+      const size_t j = inosce->second;
+      const anab::Calorimetry& cns = calonosce[plane_index_nosce];
+      hit.dQdx_NoSCE          = cns.dQdx().at(j);
+      hit.dEdx_NoSCE          = cns.dEdx().at(j);
+      hit.ResidualRange_NoSCE = cns.ResidualRange().at(j);
+      hit.Pitch_NoSCE         = cns.TrkPitchVec().at(j);
+      hit.Position_NoSCE.SetXYZ(cns.XYZ().at(j).X(), cns.XYZ().at(j).Y(), cns.XYZ().at(j).Z());
+    }
 
     //extra information for calibrations
     //this is the hit used to fill the calorimetry object
-    art::Ptr<recob::Hit> ls_hit = hitVec[calo[plane_index].TpIndices().at(ihit)];
+    art::Ptr<recob::Hit> ls_hit = fAllHits[tp];
 
-    //look for the same hit in the track-meta association
-    for(int iss = 0; iss < (int)hitVec2.size(); iss++){
-      if(hitVec2[iss].key()==ls_hit.key()){
-	//now, from the meta, get the space point in the track and the direction of the hit
-	hit.Direction_NoSCE.SetXYZ(track->DirectionAtPoint(metaVec[iss]->Index()).X(),
-				   track->DirectionAtPoint(metaVec[iss]->Index()).Y(),
-				   track->DirectionAtPoint(metaVec[iss]->Index()).Z());
-      }
+    //from the track-meta association, get the trajectory point of the hit and its direction
+    auto imeta = metaByHitKey.find(ls_hit.key());
+    if(imeta != metaByHitKey.end()){
+      auto dir = track->DirectionAtPoint(imeta->second->Index());
+      hit.Direction_NoSCE.SetXYZ(dir.X(), dir.Y(), dir.Z());
     }
 
     hit.TPCid = ls_hit->WireID().TPC;
@@ -736,20 +749,17 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsTrueInfo(art::Event co
 
   if(fDebug)std::cout << "filling cosmics true info" << std::endl;
   
-  //get the truth particles
-  auto mcTruths = evt.getValidHandle<std::vector<simb::MCTruth>>(fCosmicGeneratorTag);
-
-  if(fDebug)std::cout << "there are " << (*mcTruths)[0].NParticles() << " cosmic truth particles in this event" << std::endl;
-  
+  //Geant4 primaries of cosmic origin, in a single pass over the particle list
+  //(before: one pass over the whole list per CORSIKA particle, matching by energy)
   const sim::ParticleList &pList = piServ->ParticleList();
-  //loop over truth particles
-  for(int i = 0; i < (*mcTruths)[0].NParticles(); i++){
-    const simb::MCParticle* ls_trueCosmic = GetGeantGoodParticle((*mcTruths)[0].GetParticle(i));
-    if(ls_trueCosmic){//safety check
-      if(!GetTrueParticle(trueParticles,ls_trueCosmic->TrackId())){//safety check
-	int generation = 0;
-	FillTruePartInfo(evt, pList, ls_trueCosmic, trueParticles, NULL, generation, true);
-      }
+  for(auto const& ip : pList){
+    const simb::MCParticle* ls_trueCosmic = ip.second;
+    if(ls_trueCosmic->Mother() != 0)continue;
+    auto truth = piServ->TrackIdToMCTruth_P(ls_trueCosmic->TrackId());
+    if(!truth || truth->Origin() != simb::kCosmicRay)continue;
+    if(!GetTrueParticle(trueParticles,ls_trueCosmic->TrackId())){//safety check
+      int generation = 0;
+      FillTruePartInfo(evt, pList, ls_trueCosmic, trueParticles, NULL, generation, true);
     }
   }
 }
@@ -908,48 +918,29 @@ int highlandAnalysis::CreateHighlandMiniTree::GetTrueParticleIDFromPFP(art::Even
 }
 
 //*****************************************************************************
-const simb::MCParticle* highlandAnalysis::CreateHighlandMiniTree::GetGeantGoodParticle(const simb::MCParticle &mcTruth){
-//*****************************************************************************
-
-  const sim::ParticleList & plist = piServ->ParticleList();
-
-  for(auto const part : plist){
-    if((mcTruth.PdgCode() == part.second->PdgCode()) && fabs(part.second->E() - mcTruth.E()) < 1e-5){
-      return part.second;
-    }
-  }
-
-  return NULL;
-}
-
-//*****************************************************************************
-std::pair<float*, int> highlandAnalysis::CreateHighlandMiniTree::
+std::pair<std::array<float,4>,int> highlandAnalysis::CreateHighlandMiniTree::
 GetCNNOutputFromPFParticleFromPlane(const art::Event &evt,
-				    const anab::MVAReader<recob::Hit,4> &CNN_results,
-				    protoana::ProtoDUNEPFParticleUtils& pfpUtil, 
 				    const recob::PFParticle &part,
 				    int planeID){
 //*****************************************************************************
-  
+
   //get hits from plane
   const std::vector<art::Ptr<recob::Hit>> daughterPFP_hits = 
     pfpUtil.GetPFParticleHitsFromPlane_Ptrs(part, evt, fPFParticleTag, planeID);
-  
-  //loop over hits
-  float cnn[4] = {0};
+
+  //loop over hits (returned by value: before, a pointer to a local array was returned)
+  std::array<float,4> cnn = {0,0,0,0};
   int nhits = 0;
-  for(int ihit = 0; ihit < (int)daughterPFP_hits.size(); ihit++){
-    std::array<float,4> cnn_out = CNN_results.getOutput(daughterPFP_hits[ihit]);
-    cnn[0] += cnn_out[ CNN_results.getIndex("track") ];
-    cnn[1] += cnn_out[ CNN_results.getIndex("em") ];
-    cnn[2] += cnn_out[ CNN_results.getIndex("michel") ];
-    cnn[3] += cnn_out[ CNN_results.getIndex("none") ];
+  for(const auto& h : daughterPFP_hits){
+    std::array<float,4> cnn_out = fCNN->getOutput(h);
+    cnn[0] += cnn_out[ fCNN->getIndex("track") ];
+    cnn[1] += cnn_out[ fCNN->getIndex("em") ];
+    cnn[2] += cnn_out[ fCNN->getIndex("michel") ];
+    cnn[3] += cnn_out[ fCNN->getIndex("none") ];
     nhits++;
   }
-  
-  std::pair<float*, int> output(cnn, nhits);
-  
-  return output;
+
+  return std::make_pair(cnn, nhits);
 }
 
 
