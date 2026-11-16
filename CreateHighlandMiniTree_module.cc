@@ -11,6 +11,8 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <optional>
+#include <set>
 
 //basic includes
 #include "art/Framework/Core/EDAnalyzer.h"
@@ -35,6 +37,11 @@
 #include "protoduneana/Utilities/ProtoDUNEBeamlineUtils.h"
 #include "protoduneana/Utilities/ProtoDUNEBeamCuts.h"
 #include "larsim/MCCheater/ParticleInventoryService.h"
+#include "larsim/MCCheater/BackTrackerService.h"
+#include "larcore/Geometry/Geometry.h"
+#include "lardata/DetectorInfoServices/DetectorClocksService.h"
+#include "lardataobj/RecoBase/Cluster.h"
+#include "lardataobj/AnalysisBase/T0.h"
 #include "lardata/DetectorInfoServices/DetectorPropertiesService.h"
 #include "lardata/ArtDataHelper/MVAReader.h"
 #include "lardataobj/RecoBase/Wire.h"
@@ -104,6 +111,12 @@ public:
 			    std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch, 
 			    int generation, bool BeamOrigin, bool isPandora = false);
   void FillTrackInfo       (art::Event const &evt, const recob::Track* track, AnaParticlePD* part);
+  void FillPFParticleHits  (const std::vector<art::Ptr<recob::Hit>>& hits, AnaParticlePD* part);
+  void FillSpacePoints     (const recob::PFParticle* ls_part, AnaParticlePD* part);
+  void FillPandoraInfo     (art::Event const &evt, const recob::PFParticle* ls_part, AnaParticlePD* part);
+  void FillHitRawInfo      (const art::Ptr<recob::Hit>& ls_hit, AnaHitPD& hit);
+  void FillUnassociatedHits(art::Event const &evt, AnaBunchPD* bunch);
+  void FillTrueTrajectory  (const simb::MCParticle* ls_truePart, AnaTrueParticlePD* truePart);
   void FillShowerInfo      (const recob::Shower* shower, AnaParticlePD* part);
   void FillCosmicsTrueInfo (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles);
   void FillCosmicsInfo     (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch);
@@ -118,14 +131,16 @@ public:
   int GetTrueParticleIDFromPFP          (art::Event const &evt, const recob::PFParticle* ls_part);
 
   bool IsInterestingCosmic(art::Event const &evt, const recob::PFParticle* ls_part);
+  bool IsNearBeamSlice(art::Event const &evt, const recob::PFParticle* ls_part);
+
+  /// Start and end points of the saved beam-slice particles (reco coordinates)
+  std::vector<geo::Point_t> GetBeamSliceEnds(AnaBunch* bunch);
 
   /// Summed CNN output (track, em, michel, none) of the hits of a PFParticle in one plane, and number of hits
   std::pair<std::array<float,4>,int> GetCNNOutputFromPFParticleFromPlane(const art::Event &evt,
 									  const recob::PFParticle &part,
 									  int planeID);
   
-  void WasteTime();
-
   
 private:
 
@@ -139,7 +154,11 @@ private:
   std::vector<art::Ptr<recob::Hit>> fAllHits;  // all hits of the event (index = key)
   std::unique_ptr<art::FindManyP<recob::Hit, recob::TrackHitMeta>> fTrackHitMeta;
   std::unique_ptr<anab::MVAReader<recob::Hit,4>> fCNN;
-  
+  std::unique_ptr<art::FindManyP<recob::SpacePoint>> fPFPSpacePoints;
+  std::unique_ptr<art::FindManyP<recob::Hit>> fSpacePointHits;
+  std::unique_ptr<art::FindManyP<recob::Wire>> fHitWires;
+  std::optional<detinfo::DetectorClocksData> fClockData;
+
   // fcl parameters
   std::string fBeamModuleLabel;
   protoana::ProtoDUNEBeamlineUtils fBeamlineUtils;
@@ -156,7 +175,16 @@ private:
   std::string fPIDFilename;
   TFile *     fPIDFile;
 
-  bool        fCosmics;
+  bool        fSaveHitsAllPlanes;
+  bool        fSaveSpacePoints;
+  int         fCosmicsMode;      // 0 none, 1 summary, 2 complete near the beam slice, 3 complete
+  double      fCosmicsRadius;    // cm, for CosmicsMode 2
+  int         fCosmicsTruthMode; // 0 none, 1 only cosmics matched to saved reco objects, 2 all
+  bool        fSaveUnassociatedHits;
+  double      fUnassociatedHitsRadius; // cm, 2D distance in each plane
+  std::set<int> fTrueTrajPDGs;
+  bool        fSaveHitSignal;
+  int         fFullDumpPrescale; // complete dump in 1 of every N events (0 = never)
   
   int         fMaxGeneration;
   int         fMCMaxGeneration;
@@ -165,8 +193,13 @@ private:
 
   bool        fDebug;
 
-  bool        fWasteTime;
-  int         fNLoopWT;
+  // per-event state
+  bool fFullDump;              // this event is dumped completely (FullDumpPrescale)
+  bool fFillDetail;            // fill hits, trajectory points and space points of the particle being filled
+  const simb::MCParticle* fBeamPrimary; // true beam particle (its trajectory is always saved)
+  AnaBunch* fBunch;            // bunch being filled
+  bool fIsMC;
+  int fNEvents;
 
   //forward declartion for calling functions in an easier way
   protoana::ProtoDUNETruthUtils truthUtil;
@@ -194,7 +227,16 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
 
   fPIDFilename(p.get<std::string>("PIDFilename")),
 
-  fCosmics(p.get<bool>("Cosmics")),
+  fSaveHitsAllPlanes(p.get<bool>("SaveHitsAllPlanes", true)),
+  fSaveSpacePoints(p.get<bool>("SaveSpacePoints", true)),
+  // the old Cosmics flag saved every primary PFParticle completely
+  fCosmicsMode(p.get<int>("CosmicsMode", p.get<bool>("Cosmics", false) ? 3 : 0)),
+  fCosmicsRadius(p.get<double>("CosmicsRadius", 50.)),
+  fCosmicsTruthMode(p.get<int>("CosmicsTruthMode", 1)),
+  fSaveUnassociatedHits(p.get<bool>("SaveUnassociatedHits", true)),
+  fUnassociatedHitsRadius(p.get<double>("UnassociatedHitsRadius", 30.)),
+  fSaveHitSignal(p.get<bool>("SaveHitSignal", false)),
+  fFullDumpPrescale(p.get<int>("FullDumpPrescale", 0)),
 
   fMaxGeneration(p.get<int>("MaxGeneration")),
   fMCMaxGeneration(p.get<int>("MCMaxGeneration")),
@@ -202,9 +244,15 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fNominalBeamMom(p.get<double>("NominalBeamMom")), 
 
   fDebug(p.get<bool>("Debug")),
+  fFullDump(false),
+  fFillDetail(true),
+  fBeamPrimary(NULL),
+  fBunch(NULL),
+  fIsMC(false),
+  fNEvents(0){
 
-  fWasteTime(p.get<bool>("WasteTime")),
-  fNLoopWT(p.get<int>("NLoopWT")){
+  std::vector<int> trajPDGs = p.get<std::vector<int>>("TrueTrajPDGs", {321,-321});
+  fTrueTrajPDGs.insert(trajPDGs.begin(), trajPDGs.end());
 
   fPIDFile = TFile::Open(fPIDFilename.c_str());
   PIDProfiles[211]  = (TProfile*)fPIDFile->Get("dedx_range_pi" );
@@ -224,6 +272,19 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   auto trackHandle = evt.getValidHandle<std::vector<recob::Track>>(fTrackerTag);
   fTrackHitMeta = std::make_unique<art::FindManyP<recob::Hit, recob::TrackHitMeta>>(trackHandle,evt,fTrackerTag);
   fCNN = std::make_unique<anab::MVAReader<recob::Hit,4>>(evt, "emtrkmichelid:emtrkmichel");
+  auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
+  fPFPSpacePoints = std::make_unique<art::FindManyP<recob::SpacePoint>>(pfpHandle, evt, fPFParticleTag);
+  auto spHandle = evt.getValidHandle<std::vector<recob::SpacePoint>>(fPFParticleTag);
+  fSpacePointHits = std::make_unique<art::FindManyP<recob::Hit>>(spHandle, evt, fPFParticleTag);
+  fHitWires.reset();
+  if(fSaveHitSignal)fHitWires = std::make_unique<art::FindManyP<recob::Wire>>(hitHandle, evt, fHitTag);
+  fClockData.emplace(art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(evt));
+  fBeamPrimary = NULL;
+  fBunch = NULL;
+  fIsMC = !evt.isRealData();
+  fFillDetail = true;
+  fFullDump = fFullDumpPrescale > 0 && fNEvents % fFullDumpPrescale == 0;
+  fNEvents++;
 
   //create a spill for each event and fill event info
   //(owned here, so that it is deleted also in the early returns)
@@ -236,57 +297,60 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   info.SubRun = evt.subRun();
   info.Event  = evt.id().event();
   info.IsMC   = !evt.isRealData();
+  info.EventTime = evt.time().timeHigh();
   info.NominalBeamMom = fNominalBeamMom;
+  info.EmptyEvent = pfpHandle->empty();
+  info.HasPandora = false; //set to true below if there is a beam slice
 
   if(fDebug){
     std::cout << "Run " << info.Run << ", event " << info.Event << ", MC = " << info.IsMC;
     std::cout << ", Beam Mom = " << info.NominalBeamMom << std::endl;
   }
 
+  //Events that fail a check are saved anyway, marked, for the normalization:
+  //  - bad beamline trigger: DataQuality->GoodDaq = false, only event info is saved
+  //  - no true beam particle (MC): TrueParticles without the beam particle
+  //  - no beam slice: EventInfo->HasPandora = false, no beam-slice particles
+
   //data quality and check
   spill->DataQuality = MakeDataQuality();
   FillDQInfo(evt,static_cast<AnaDataQuality*>(spill->DataQuality));
-  if(!static_cast<AnaDataQuality*>(spill->DataQuality)->GoodDaq){
-    mf::LogVerbatim("CreateHighlandMiniTree") << "Beam quality check failed";
-    return;
-  }
- 
-  //true info
-  if(info.IsMC){
-    FillBeamTrueInfo(evt,spill);
-    if(spill->TrueParticles.empty()){
-      mf::LogVerbatim("CreateHighlandMiniTree") << "No true info found";
-      return;
+  bool goodDaq = static_cast<AnaDataQuality*>(spill->DataQuality)->GoodDaq;
+  if(!goodDaq)mf::LogVerbatim("CreateHighlandMiniTree") << "Beam quality check failed, event saved as bad DAQ";
+
+  if(goodDaq){
+    //true info
+    if(info.IsMC){
+      FillBeamTrueInfo(evt,spill);
+      if(spill->TrueParticles.empty())
+	mf::LogVerbatim("CreateHighlandMiniTree") << "No true beam particle found";
+      //all true cosmics, if desired (CosmicsTruthMode 1 only saves those matched to reco objects)
+      if(fCosmicsTruthMode == 2)FillCosmicsTrueInfo(evt, spill->TrueParticles);
     }
-    //get cosmics if desired
-    //for the moment cosmics are only retrieved if the beam true info has been succesfully stored TODO make this independent
-    if(fCosmics)FillCosmicsTrueInfo(evt, spill->TrueParticles);
+
+    //beam related information
+    spill->Beam = MakeBeam();
+    FillBeamInfo(evt, static_cast<AnaBeamPD*>(spill->Beam));
+    //if it is a mc event, match the primary particle with the beam particle
+    if(info.IsMC && fBeamPrimary && !spill->TrueParticles.empty())
+      static_cast<AnaBeam*>(spill->Beam)->BeamParticle->TrueObject = spill->TrueParticles.at(0);
+
+    //Fill each bunch info (we have only one in PD)
+    AnaBunchPD* bunch = MakeBunch();
+    spill->Bunches.push_back(bunch);
+    FillBunchInfo(evt, spill->TrueParticles, bunch, spill);
+    info.HasPandora = !bunch->Particles.empty();
+    if(!info.HasPandora)mf::LogVerbatim("CreateHighlandMiniTree") << "No beam slice, event saved without beam particles";
+
+    //check if primary particle is beam particle (MC only)
+    if(info.IsMC && fBeamPrimary)CheckPrimaryMatching(spill->TrueParticles, bunch);
+
+    //hits without PFParticle near the ends of the beam slice (needs the beam slice)
+    if((fSaveUnassociatedHits || fFullDump) && info.HasPandora)FillUnassociatedHits(evt, bunch);
+
+    //cosmics
+    if(fCosmicsMode > 0 || fFullDump)FillCosmicsInfo(evt, spill->TrueParticles, bunch);
   }
-  
-  //beam related information
-  spill->Beam = MakeBeam();
-  FillBeamInfo(evt, static_cast<AnaBeamPD*>(spill->Beam));
-  //if it is a mc event, match the primary particle with the beam particle
-  if(info.IsMC)static_cast<AnaBeam*>(spill->Beam)->BeamParticle->TrueObject = spill->TrueParticles.at(0);
-  
-  //Fill each bunch info (we have only one in PD)
-  AnaBunch* bunch = MakeBunch();
-  spill->Bunches.push_back(bunch);
-  FillBunchInfo(evt, spill->TrueParticles, bunch, spill);
-  if(bunch->Particles.empty()){
-    mf::LogVerbatim("CreateHighlandMiniTree") << "Returning";
-    return;
-  }
-  
-  //check if primary particle is beam particle (MC only)
-  if(info.IsMC)CheckPrimaryMatching(spill->TrueParticles, bunch);
-  
-  //get cosmics if desired
-  //for the moment cosmics are only retrieved if the beam info has been succesfully stored
-  if(fCosmics)FillCosmicsInfo(evt, spill->TrueParticles, bunch);
-  
-  //waste time if needed
-  if(fWasteTime)WasteTime();
 
   //clone the new spill (RedoLinks), fill the tree and delete the clone
   fspill = spill->Clone();
@@ -333,7 +397,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBeamTrueInfo(art::Event const
   const sim::ParticleList &pList = piServ->ParticleList();
 
   spill->TrueParticles.clear();
-  
+  fBeamPrimary = ls_truePrimaryPart;
+
   int generation = 0;
 
   FillTruePartInfo(evt, pList, ls_truePrimaryPart, spill->TrueParticles, NULL, generation, true);
@@ -393,6 +458,10 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
   truePart->Momentum = ls_truePart->P();
   truePart->MomentumEnd = ls_truePart->P(iend);
 
+  //true trajectory of the beam particle and of the configured PDGs
+  if(ls_truePart == fBeamPrimary || fTrueTrajPDGs.count(truePart->PDG))
+    FillTrueTrajectory(ls_truePart, truePart);
+
   //increment generation
   generation++;
 
@@ -428,14 +497,30 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBeamInfo(art::Event const &ev
   std::string beamtag;
   if(evt.isRealData())beamtag = fBeamModuleLabel; // for data
   else beamtag = fGeneratorTag;                   // MC
-  auto beamHandle = evt.getValidHandle<std::vector<beam::ProtoDUNEBeamEvent>>(beamtag);
+  art::Handle<std::vector<beam::ProtoDUNEBeamEvent>> beamHandle;
   std::vector<art::Ptr<beam::ProtoDUNEBeamEvent>> beamVec;
+  if(evt.getByLabel(beamtag, beamHandle))art::fill_ptr_vector(beamVec, beamHandle);
 
-  if(beamHandle.isValid()){
-    art::fill_ptr_vector(beamVec, beamHandle);
+  //create the beam particle (also if there is no beam event, the analysis expects it)
+  beam->BeamParticle = MakeParticle();
+
+  if(beamVec.empty()){
+    mf::LogVerbatim("CreateHighlandMiniTree") << "No beam event found";
+    return;
   }
 
   const beam::ProtoDUNEBeamEvent & beamEvent = *(beamVec.at(0)); //Should just have one
+
+  beam->BeamTrigger = beamEvent.GetTimingTrigger();
+  beam->CerenkovStatus[0]   = beamEvent.GetCKov0Status();
+  beam->CerenkovStatus[1]   = beamEvent.GetCKov1Status();
+  beam->CerenkovTime[0]     = beamEvent.GetCKov0Time();
+  beam->CerenkovTime[1]     = beamEvent.GetCKov1Time();
+  beam->CerenkovPressure[0] = beamEvent.GetCKov0Pressure();
+  beam->CerenkovPressure[1] = beamEvent.GetCKov1Pressure();
+  //time of the beam trigger, in seconds (the nanoseconds are only resolved to ~0.2 us in a double)
+  beam->BeamTrackTime = beamEvent.GetT0Sec() + 1e-9*beamEvent.GetT0Nano();
+  if(!beamEvent.GetRecoBeamMomenta().empty())beam->BeamMomentum = beamEvent.GetRecoBeamMomenta()[0];
 
   //fill beam intrumentation information
   beam->nTracks = beamEvent.GetBeamTracks().size();
@@ -449,9 +534,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBeamInfo(art::Event const &ev
   beam->nFibers[0] = beamEvent.GetActiveFibers( "XBPF022697" ).size();
   beam->nFibers[1] = beamEvent.GetActiveFibers( "XBPF022701" ).size();
   beam->nFibers[2] = beamEvent.GetActiveFibers( "XBPF022702" ).size();
-
-  //create the beam particle
-  beam->BeamParticle = MakeParticle();
 
   if(beam->nTracks > 0){
 
@@ -526,12 +608,15 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   AnaParticlePD* part = MakeParticle();
   bunch->Particles.push_back(part);
 
-  //if mc try to match a truth particle
-  if(!evt.isRealData())TrueRecoMatching(evt, ls_part, part, trueParticles);
- 
+  //Pandora metadata: slice, clear cosmic, track score and T0
+  FillPandoraInfo(evt, ls_part, part);
+
   //fill PFP basic info
   part->isPandora  = isPandora;
   part->BeamOrigin = BeamOrigin;
+
+  //if mc try to match a truth particle (uses BeamOrigin)
+  if(!evt.isRealData())TrueRecoMatching(evt, ls_part, part, trueParticles);
 
   part->UniqueID = ls_part->Self();
   part->ParentID = ls_part->Parent();
@@ -552,6 +637,12 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   if(shower)part->ShowerID = shower->ID();
   if(track)      FillTrackInfo(evt,track,part);
   else if(shower)FillShowerInfo(shower,part);
+
+  //hits of the PFParticles without track (tracks have their calorimetry hits), and 3D space points
+  if(!track && fFillDetail){
+    if(fSaveHitsAllPlanes)FillPFParticleHits(ls_part_hits, part);
+    if(fSaveSpacePoints)  FillSpacePoints(ls_part, part);
+  }
 
   //go for CNN (outputs: track, em, michel, none), plane 2
   std::pair<std::array<float,4>,int> cnnResult = GetCNNOutputFromPFParticleFromPlane(evt, *ls_part, 2);
@@ -600,16 +691,19 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   part->DirectionEnd[2] = track->EndDirection().Z();
     
   part->Length = track->Length();
-  //fill trajectory points vector
-  int ntrajpts = track->NumberTrajectoryPoints();
-  for(int i = 0; i < ntrajpts; i++){
-    AnaTrajectoryPointPD tjp;
-    auto pos = track->LocationAtPoint(i);
-    auto dir = track->DirectionAtPoint(i);
-    tjp.Position_NoSCE.SetXYZ(pos.X(),pos.Y(),pos.Z());
-    tjp.Direction_NoSCE.SetXYZ(dir.X(),dir.Y(),dir.Z());
-    if(tjp.IsValid())
-      part->TrjPoints.push_back(tjp);
+
+  //fill trajectory points vector (not in summary mode: cosmics far from the beam slice)
+  if(fFillDetail){
+    int ntrajpts = track->NumberTrajectoryPoints();
+    for(int i = 0; i < ntrajpts; i++){
+      AnaTrajectoryPointPD tjp;
+      auto pos = track->LocationAtPoint(i);
+      auto dir = track->DirectionAtPoint(i);
+      tjp.Position_NoSCE.SetXYZ(pos.X(),pos.Y(),pos.Z());
+      tjp.Direction_NoSCE.SetXYZ(dir.X(),dir.Y(),dir.Z());
+      if(tjp.IsValid())
+	part->TrjPoints.push_back(tjp);
+    }
   }
 
   //fill hit basic info
@@ -620,105 +714,286 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   std::vector<anab::Calorimetry> calonosce = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagNoSCE);
 
   //safety check
-  if(calo.empty() || calonosce.empty())return;
-
-  //get collection plane index (it changes within productions and data/MC)
-  int plane_index = -1;
-  int plane_index_nosce = -1;
-  for(int i = 0; i < (int)calo.size(); i++){
-    if(calo[i].PlaneID().Plane == 2){
-      plane_index = i;
-      break;
-    }
-  }
-  for(int i = 0; i < (int)calonosce.size(); i++){
-    if(calonosce[i].PlaneID().Plane == 2){
-      plane_index_nosce = i;
-      break;
-    }
-  }
-  if(plane_index==-1 || plane_index_nosce==-1){
-    if(fDebug)std::cout << "No collection plane founde" << std::endl;
-    return;
-  }
+  if(calo.empty())return;
 
   //hits and metadata of this track (for the direction at each hit), indexed by hit key
   std::map<size_t, const recob::TrackHitMeta*> metaByHitKey;
-  if(fTrackHitMeta->isValid()){
+  if(fFillDetail && fTrackHitMeta->isValid()){
     const auto& metaVec = fTrackHitMeta->data(track->ID());
     const auto& hitVec2 = fTrackHitMeta->at(track->ID());
     for(size_t iss = 0; iss < hitVec2.size(); iss++)metaByHitKey[hitVec2[iss].key()] = metaVec[iss];
   }
 
-  //calo and calonosce do not necessarily have the same hits in the same order: match them by hit index
-  std::map<size_t, size_t> nosceByTp;
-  for(size_t i = 0; i < calonosce[plane_index_nosce].TpIndices().size(); i++)
-    nosceByTp[calonosce[plane_index_nosce].TpIndices()[i]] = i;
-
-  //number of hits
-  part->NHitsPerPlane[2] = calo[plane_index].dQdx().size();
-
-  //for chi2 calculation
+  //for chi2 calculation (collection plane)
   std::vector<double> dEdx;
   std::vector<double> ResRange;
-  dEdx.clear();
-  ResRange.clear();
 
-  //fil hit info
-  for(int ihit = 0; ihit < (int)calo[plane_index].dQdx().size(); ihit++){
-    //create a highland hit 
-    AnaHitPD hit;
-    
-    //fill calibrated calorimetry info
-    hit.dQdx          = calo[plane_index].dQdx().at(ihit);
-    hit.dEdx          = calo[plane_index].dEdx().at(ihit);
-    hit.ResidualRange = calo[plane_index].ResidualRange().at(ihit);
-    hit.Pitch         = calo[plane_index].TrkPitchVec().at(ihit);
-    hit.Position.SetXYZ(calo[plane_index].XYZ().at(ihit).X(), 
-			calo[plane_index].XYZ().at(ihit).Y(), 
-			calo[plane_index].XYZ().at(ihit).Z());
+  //loop over the planes in the calorimetry (their order changes within productions and data/MC)
+  for(const anab::Calorimetry& cal : calo){
+    const int plane = cal.PlaneID().Plane;
+    if(plane < 0 || plane > 2)continue;
 
-    //fill raw calorimetry info, from the same hit in the no-SCE calorimetry (if there)
-    const size_t tp = calo[plane_index].TpIndices().at(ihit);
-    auto inosce = nosceByTp.find(tp);
-    if(inosce != nosceByTp.end()){
-      const size_t j = inosce->second;
-      const anab::Calorimetry& cns = calonosce[plane_index_nosce];
-      hit.dQdx_NoSCE          = cns.dQdx().at(j);
-      hit.dEdx_NoSCE          = cns.dEdx().at(j);
-      hit.ResidualRange_NoSCE = cns.ResidualRange().at(j);
-      hit.Pitch_NoSCE         = cns.TrkPitchVec().at(j);
-      hit.Position_NoSCE.SetXYZ(cns.XYZ().at(j).X(), cns.XYZ().at(j).Y(), cns.XYZ().at(j).Z());
+    //number of hits
+    part->NHitsPerPlane[plane] = cal.dQdx().size();
+
+    //the same plane in the no-SCE calorimetry. calo and calonosce do not necessarily have
+    //the same hits in the same order: match them by hit index
+    const anab::Calorimetry* cns = NULL;
+    for(const anab::Calorimetry& c : calonosce)
+      if(c.PlaneID().Plane == cal.PlaneID().Plane){cns = &c; break;}
+    std::map<size_t, size_t> nosceByTp;
+    if(cns)
+      for(size_t i = 0; i < cns->TpIndices().size(); i++)nosceByTp[cns->TpIndices()[i]] = i;
+
+    //only the collection plane, unless SaveHitsAllPlanes
+    const bool saveHits = fFillDetail && (plane == 2 || fSaveHitsAllPlanes);
+
+    for(size_t ihit = 0; ihit < cal.dQdx().size(); ihit++){
+      if(plane == 2){
+	dEdx.push_back(cal.dEdx().at(ihit));
+	ResRange.push_back(cal.ResidualRange().at(ihit));
+      }
+      if(!saveHits)continue;
+
+      //create a highland hit
+      AnaHitPD hit;
+
+      //fill calibrated calorimetry info
+      hit.dQdx          = cal.dQdx().at(ihit);
+      hit.dEdx          = cal.dEdx().at(ihit);
+      hit.ResidualRange = cal.ResidualRange().at(ihit);
+      hit.Pitch         = cal.TrkPitchVec().at(ihit);
+      hit.Position.SetXYZ(cal.XYZ().at(ihit).X(), cal.XYZ().at(ihit).Y(), cal.XYZ().at(ihit).Z());
+
+      //fill raw calorimetry info, from the same hit in the no-SCE calorimetry (if there)
+      const size_t tp = cal.TpIndices().at(ihit);
+      auto inosce = nosceByTp.find(tp);
+      if(inosce != nosceByTp.end()){
+	const size_t j = inosce->second;
+	hit.dQdx_NoSCE          = cns->dQdx().at(j);
+	hit.dEdx_NoSCE          = cns->dEdx().at(j);
+	hit.ResidualRange_NoSCE = cns->ResidualRange().at(j);
+	hit.Pitch_NoSCE         = cns->TrkPitchVec().at(j);
+	hit.Position_NoSCE.SetXYZ(cns->XYZ().at(j).X(), cns->XYZ().at(j).Y(), cns->XYZ().at(j).Z());
+      }
+
+      //this is the hit used to fill the calorimetry object
+      if(tp >= fAllHits.size())continue;
+      const art::Ptr<recob::Hit>& ls_hit = fAllHits[tp];
+      FillHitRawInfo(ls_hit, hit);
+
+      //from the track-meta association, get the trajectory point of the hit and its direction
+      auto imeta = metaByHitKey.find(ls_hit.key());
+      if(imeta != metaByHitKey.end()){
+	auto dir = track->DirectionAtPoint(imeta->second->Index());
+	hit.Direction_NoSCE.SetXYZ(dir.X(), dir.Y(), dir.Z());
+      }
+
+      //add hit to vector of hits
+      part->Hits[plane].push_back(hit);
     }
-
-    //extra information for calibrations
-    //this is the hit used to fill the calorimetry object
-    art::Ptr<recob::Hit> ls_hit = fAllHits[tp];
-
-    //from the track-meta association, get the trajectory point of the hit and its direction
-    auto imeta = metaByHitKey.find(ls_hit.key());
-    if(imeta != metaByHitKey.end()){
-      auto dir = track->DirectionAtPoint(imeta->second->Index());
-      hit.Direction_NoSCE.SetXYZ(dir.X(), dir.Y(), dir.Z());
-    }
-
-    hit.TPCid = ls_hit->WireID().TPC;
-    hit.PlaneID = 2; //we only save collection plane information
-
-    //fill vectors for chi2 calculation
-    dEdx.push_back(hit.dEdx);
-    ResRange.push_back(hit.ResidualRange);
-    
-    //add hit to vector of hits
-    part->Hits[2].push_back(hit);
   }
 
   //get PID
+  if(dEdx.empty())return;
   std::pair<double,int> proton_PID = trackUtil.Chi2PID(dEdx,ResRange,PIDProfiles[2212]);
   std::pair<double,int> muon_PID   = trackUtil.Chi2PID(dEdx,ResRange,PIDProfiles[13]  );
   part->Chi2Proton = proton_PID.first;
   part->Chi2Muon   = muon_PID.first;
   part->Chi2ndf    = proton_PID.second;
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::FillHitRawInfo(const art::Ptr<recob::Hit>& ls_hit, AnaHitPD& hit){
+//*****************************************************************************
+
+  hit.UniqueID          = ls_hit.key();
+  hit.WireID.Wire       = ls_hit->WireID().Wire;
+  hit.WireID.Plane      = ls_hit->WireID().Plane;
+  hit.WireID.TPC        = ls_hit->WireID().TPC;
+  hit.WireID.Cryostat   = ls_hit->WireID().Cryostat;
+  hit.TPCid             = ls_hit->WireID().TPC;
+  hit.PlaneID           = ls_hit->WireID().Plane;
+  hit.Channel           = ls_hit->Channel();
+  hit.View              = ls_hit->View();
+  hit.Integral          = ls_hit->Integral();
+  hit.PeakTime          = ls_hit->PeakTime();
+  hit.PeakAmplitude     = ls_hit->PeakAmplitude();
+  hit.StartTick         = ls_hit->StartTick();
+  hit.EndTick           = ls_hit->EndTick();
+
+  //CNN score of the hit: track, em, michel
+  std::array<float,4> cnn_out = fCNN->getOutput(ls_hit);
+  hit.CNN[0] = cnn_out[ fCNN->getIndex("track") ];
+  hit.CNN[1] = cnn_out[ fCNN->getIndex("em") ];
+  hit.CNN[2] = cnn_out[ fCNN->getIndex("michel") ];
+
+  //true particle that deposits most energy in the hit
+  if(fIsMC && fClockData){
+    art::ServiceHandle<cheat::BackTrackerService> bt;
+    float emax = -1;
+    for(const sim::TrackIDE& ide : bt->HitToTrackIDEs(*fClockData, ls_hit)){
+      if(ide.energy > emax){
+	emax = ide.energy;
+	hit.TrueID = ide.trackID;
+      }
+    }
+  }
+
+  //waveform between the start and end ticks of the hit
+  if(fHitWires && fHitWires->isValid()){
+    const auto& wires = fHitWires->at(ls_hit.key());
+    if(!wires.empty()){
+      const std::vector<float> signal = wires[0]->Signal();
+      for(size_t t = ls_hit->StartTick(); t < (size_t)ls_hit->EndTick() && t < signal.size(); t++)
+	hit.Signal.push_back(signal[t]);
+    }
+  }
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::FillPFParticleHits(const std::vector<art::Ptr<recob::Hit>>& hits, AnaParticlePD* part){
+//*****************************************************************************
+
+  //raw hits of the PFParticle (no calorimetry), in the three planes
+  for(int iplane = 0; iplane < 3; iplane++){
+    part->Hits[iplane].clear();
+    part->NHitsPerPlane[iplane] = 0;
+  }
+
+  for(const art::Ptr<recob::Hit>& ls_hit : hits){
+    const int plane = ls_hit->WireID().Plane;
+    if(plane < 0 || plane > 2)continue;
+    AnaHitPD hit;
+    FillHitRawInfo(ls_hit, hit);
+    part->Hits[plane].push_back(hit);
+    part->NHitsPerPlane[plane]++;
+  }
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::FillSpacePoints(const recob::PFParticle* ls_part, AnaParticlePD* part){
+//*****************************************************************************
+
+  part->SpacePoints.clear();
+  if(!fPFPSpacePoints->isValid())return;
+
+  //PFParticle::Self() is its index in the collection
+  for(const art::Ptr<recob::SpacePoint>& ls_sp : fPFPSpacePoints->at(ls_part->Self())){
+    AnaSpacePointPD sp;
+    for(int i = 0; i < 3; i++)sp.Position[i] = ls_sp->XYZ()[i];
+    if(fSpacePointHits->isValid()){
+      for(const art::Ptr<recob::Hit>& ls_hit : fSpacePointHits->at(ls_sp.key())){
+	const int plane = ls_hit->WireID().Plane;
+	if(plane >= 0 && plane < 3)sp.HitIDs[plane] = ls_hit.key();
+      }
+    }
+    part->SpacePoints.push_back(sp);
+  }
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::FillPandoraInfo(art::Event const &evt, const recob::PFParticle* ls_part, AnaParticlePD* part){
+//*****************************************************************************
+
+  part->SliceID       = pfpUtil.GetPFParticleSliceIndex(*ls_part, evt, fPFParticleTag);
+  part->IsClearCosmic = pfpUtil.IsClearCosmic(*ls_part, evt, fPFParticleTag);
+
+  const std::map<std::string,float> meta = pfpUtil.GetPFParticleMetaData(*ls_part, evt, fPFParticleTag);
+  auto score = meta.find("TrackScore");
+  if(score != meta.end())part->PandoraTrackScore = score->second;
+
+  const std::vector<anab::T0> t0 = pfpUtil.GetPFParticleT0(*ls_part, evt, fPFParticleTag);
+  if(!t0.empty())part->T0 = t0[0].Time();
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::FillTrueTrajectory(const simb::MCParticle* ls_truePart, AnaTrueParticlePD* truePart){
+//*****************************************************************************
+
+  truePart->TrjPoints.clear();
+
+  //Geant4 process at each trajectory point (only if the MC production saved them)
+  const simb::MCTrajectory& traj = ls_truePart->Trajectory();
+  std::map<size_t, std::string> processes;
+  for(const auto& ip : traj.TrajectoryProcesses())processes[ip.first] = traj.KeyToProcess(ip.second);
+
+  for(size_t i = 0; i < ls_truePart->NumberTrajectoryPoints(); i++){
+    AnaTrueTrajPointPD tp;
+    tp.Position[0] = ls_truePart->Vx(i);
+    tp.Position[1] = ls_truePart->Vy(i);
+    tp.Position[2] = ls_truePart->Vz(i);
+    tp.Momentum[0] = ls_truePart->Px(i);
+    tp.Momentum[1] = ls_truePart->Py(i);
+    tp.Momentum[2] = ls_truePart->Pz(i);
+    auto iproc = processes.find(i);
+    if(iproc != processes.end())tp.Process = truePart->ConvertProcess(iproc->second);
+    truePart->TrjPoints.push_back(tp);
+  }
+}
+
+//*****************************************************************************
+std::vector<geo::Point_t> highlandAnalysis::CreateHighlandMiniTree::GetBeamSliceEnds(AnaBunch* bunch){
+//*****************************************************************************
+
+  std::vector<geo::Point_t> ends;
+  for(AnaParticleB* p : bunch->Particles){
+    AnaParticlePD* part = static_cast<AnaParticlePD*>(p);
+    if(!part->BeamOrigin)continue;
+    if(part->PositionStart[0] > -900)ends.emplace_back(part->PositionStart[0], part->PositionStart[1], part->PositionStart[2]);
+    if(part->PositionEnd[0]   > -900)ends.emplace_back(part->PositionEnd[0],   part->PositionEnd[1],   part->PositionEnd[2]);
+  }
+  return ends;
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::FillUnassociatedHits(art::Event const &evt, AnaBunchPD* bunch){
+//*****************************************************************************
+
+  if(fDebug)std::cout << "filling unassociated hits" << std::endl;
+
+  bunch->UnassociatedHits.clear();
+
+  //hits used by any PFParticle of the event (through its clusters)
+  auto pfpHandle     = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
+  auto clusterHandle = evt.getValidHandle<std::vector<recob::Cluster>>(fPFParticleTag);
+  art::FindManyP<recob::Cluster> pfpClusters(pfpHandle, evt, fPFParticleTag);
+  art::FindManyP<recob::Hit> clusterHits(clusterHandle, evt, fPFParticleTag);
+  std::vector<bool> used(fAllHits.size(), false);
+  if(pfpClusters.isValid() && clusterHits.isValid()){
+    for(size_t ipfp = 0; ipfp < pfpHandle->size(); ipfp++)
+      for(const art::Ptr<recob::Cluster>& cl : pfpClusters.at(ipfp))
+	for(const art::Ptr<recob::Hit>& h : clusterHits.at(cl.key()))
+	  if(h.key() < used.size())used[h.key()] = true;
+  }
+
+  //ends of the beam slice
+  const std::vector<geo::Point_t> ends = GetBeamSliceEnds(bunch);
+  if(ends.empty())return;
+
+  //the hits have no 3D position: compute the distance in 2D in each plane (wire, drift)
+  art::ServiceHandle<geo::Geometry const> geom;
+  auto const detProp = art::ServiceHandle<detinfo::DetectorPropertiesService const>()->DataFor(evt, *fClockData);
+  const double r2 = fUnassociatedHitsRadius*fUnassociatedHitsRadius;
+
+  for(const art::Ptr<recob::Hit>& ls_hit : fAllHits){
+    if(used[ls_hit.key()])continue;
+    const geo::PlaneID planeID = ls_hit->WireID().asPlaneID();
+    const double pitch = geom->WirePitch(planeID);
+    const double xhit  = detProp.ConvertTicksToX(ls_hit->PeakTime(), planeID);
+    bool near = fFullDump;
+    for(size_t i = 0; i < ends.size() && !near; i++){
+      const double dw = (ls_hit->WireID().Wire - geom->WireCoordinate(ends[i], planeID))*pitch;
+      const double dx = xhit - ends[i].X();
+      near = dw*dw + dx*dx < r2;
+    }
+    if(!near)continue;
+    AnaHitPD hit;
+    FillHitRawInfo(ls_hit, hit);
+    bunch->UnassociatedHits.push_back(hit);
+  }
+
+  if(fDebug)std::cout << bunch->UnassociatedHits.size() << " unassociated hits saved" << std::endl;
 }
 
 //*****************************************************************************
@@ -771,23 +1046,49 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsInfo(art::Event const 
 //*****************************************************************************
 
   if(fDebug)std::cout << "filling cosmics info" << std::endl;
+  fBunch = bunch;
   
   //get vector of pfp particles
   auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
   if(fDebug)std::cout << "there are " << (*pfpHandle).size() << " PFP particles in this event" << std::endl;
 
   int cosmics = 0; 
+  int detailed = 0;
+
+  //CosmicsMode: 1 summary (no hits, trajectory points nor space points), 2 complete only near
+  //the beam slice (CosmicsRadius), 3 complete. The full dump events are complete
+  const int mode = fFullDump ? 3 : fCosmicsMode;
 
   //look for interesting cosmics and add them to the particle vector if they have not been added previously
-  for(const recob::PFParticle ls_part : (*pfpHandle)){
-    if(!GetRecoParticle(bunch, ls_part.Self())){
-      if(IsInterestingCosmic(evt,&ls_part)){
-	cosmics++;
-	FillParticleInfo(evt, pfpHandle, &ls_part, trueParticles, bunch, -1, false);
-      }
+  for(const recob::PFParticle& ls_part : (*pfpHandle)){
+    if(GetRecoParticle(bunch, ls_part.Self()))continue;
+    if(!IsInterestingCosmic(evt,&ls_part))continue;
+    cosmics++;
+    fFillDetail = mode == 3 || (mode == 2 && IsNearBeamSlice(evt, &ls_part));
+    if(fFillDetail)detailed++;
+    FillParticleInfo(evt, pfpHandle, &ls_part, trueParticles, bunch, -1, false);
+  }
+  fFillDetail = true;
+  if(fDebug)std::cout << cosmics << " interesting cosmics added to the particles vector, " << detailed << " with all the information" << std::endl;
+}
+
+//*****************************************************************************
+bool highlandAnalysis::CreateHighlandMiniTree::IsNearBeamSlice(art::Event const &evt, const recob::PFParticle* ls_part){
+//*****************************************************************************
+
+  //minimum distance between the space points of the PFParticle and the ends of the beam slice
+  const std::vector<geo::Point_t> ends = GetBeamSliceEnds(fBunch);
+  if(ends.empty())return false;
+  const double r2 = fCosmicsRadius*fCosmicsRadius;
+
+  for(const art::Ptr<recob::SpacePoint>& sp : fPFPSpacePoints->at(ls_part->Self())){
+    const double* xyz = sp->XYZ();
+    for(const geo::Point_t& e : ends){
+      const double dx = xyz[0]-e.X(), dy = xyz[1]-e.Y(), dz = xyz[2]-e.Z();
+      if(dx*dx + dy*dy + dz*dz < r2)return true;
     }
   }
-  std::cout << cosmics << " interesting cosmics added to the particles vector" << std::endl;
+  return false;
 }
 
 //*****************************************************************************
@@ -841,6 +1142,12 @@ void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const
   //get the true particle ID that generated this reco particle
   int truePartID = GetTrueParticleIDFromPFP(evt, ls_part);
 
+  //purity and completeness of the matching (not in summary mode: the completeness loops over all hits)
+  if(fFillDetail){
+    part->TruePur = truthUtil.GetPurity(*fClockData, *ls_part, evt, fPFParticleTag);
+    part->TrueEff = truthUtil.GetCompleteness(*fClockData, *ls_part, evt, fPFParticleTag, fHitTag);
+  }
+
   //look for it in the TrueParticles vector
   for(int itrue = 0; itrue < (int)trueParticles.size(); itrue++){
     if(truePartID == trueParticles.at(itrue)->ID){
@@ -852,7 +1159,8 @@ void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const
   }
 
   //if not found among stored true particles, look for it on the pList
-  if(!found){
+  //(not for cosmics with CosmicsTruthMode 0)
+  if(!found && (part->BeamOrigin || fCosmicsTruthMode > 0)){
     if(fDebug)std::cout << "matching true particle not found among previously stored trueparticles," << std::endl;
     const sim::ParticleList &pList = piServ->ParticleList();
     for(auto const ls_truePart : pList){
@@ -979,25 +1287,6 @@ void highlandAnalysis::CreateHighlandMiniTree::endJob(){
 void highlandAnalysis::CreateHighlandMiniTree::reset(){
 //*****************************************************************************
   
-}
-
-//*****************************************************************************
-void highlandAnalysis::CreateHighlandMiniTree::WasteTime(){
-//*****************************************************************************
-  
-  std::cout << "as my module runs too fast compared with the amount of time it takes to open rootfiles, I need to increase the CPU time so I don't get low efficiency warnings :(" << std::endl;
-  int x = 0;
-  
-  for(int i = 0; i < fNLoopWT; i++){
-    for(int j = 0; j < fNLoopWT; j++){
-      for(int k = 0; k < fNLoopWT; k++){
-	for(int l = 0; l < fNLoopWT; l++){
-	  x = x + pow(-1,i+j+k+l);
-	}
-      }
-    }
-  }
-  std::cout << "the result of this amazing waste of time is " << x << std::endl;
 }
 
 DEFINE_ART_MODULE(highlandAnalysis::CreateHighlandMiniTree)

@@ -63,8 +63,6 @@ physics:
 physics.analyzers.highlandana.CalorimetryTag:       "pandoracali"
 physics.analyzers.highlandana.CalorimetryTagNoSCE:  "pandoracalonosce"
 physics.analyzers.highlandana.Debug: 		    true
-physics.analyzers.highlandana.WasteTime: 	    false
-physics.analyzers.highlandana.Cosmics:    	    false
 physics.analyzers.highlandana.NominalBeamMom:	    6.0
 
 services.ParticleInventoryService.ParticleInventory.EveIdCalculator: "EmEveIdCalculator"
