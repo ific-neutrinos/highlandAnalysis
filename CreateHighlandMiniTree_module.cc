@@ -13,6 +13,8 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <cmath>
+#include "cetlib_except/exception.h"
 
 //basic includes
 #include "art/Framework/Core/EDAnalyzer.h"
@@ -133,7 +135,13 @@ public:
   int GetTrueParticleIDFromPFP          (art::Event const &evt, const recob::PFParticle* ls_part);
 
   bool IsInterestingCosmic(art::Event const &evt, const recob::PFParticle* ls_part);
-  bool IsNearBeamSlice(art::Event const &evt, const recob::PFParticle* ls_part);
+  /// Space points of a PFParticle and all its descendants
+  void GetHierarchySpacePoints(const std::vector<recob::PFParticle>& pfps, const recob::PFParticle& ls_part,
+			       std::vector<art::Ptr<recob::SpacePoint>>& sps);
+  /// Is any of the space points closer than CosmicsRadius to an end of the beam slice?
+  bool IsNearBeamSlice(const std::vector<art::Ptr<recob::SpacePoint>>& sps);
+  /// Is any of the space points inside the beam volume (cylinder around the nominal beam axis)?
+  bool IsInBeamVolume(const std::vector<art::Ptr<recob::SpacePoint>>& sps);
 
   /// Start and end points of the saved beam-slice particles (reco coordinates)
   std::vector<geo::Point_t> GetBeamSliceEnds(AnaBunch* bunch);
@@ -180,8 +188,14 @@ private:
   bool        fSaveHitsAllPlanes;
   bool        fSaveSpacePoints;
   bool        fSaveTrackSpacePoints; // also for tracks (one per hit with 3D, like their trajectory points)
-  int         fCosmicsMode;      // 0 none, 1 summary, 2 complete near the beam slice, 3 complete
-  double      fCosmicsRadius;    // cm, for CosmicsMode 2
+  int         fCosmicsMode;      // 0 none, 1 summary, 2 complete near the beam slice, 3 also in the beam volume, 4 complete
+  double      fCosmicsRadius;    // cm, for CosmicsMode >= 2
+  // beam axis, different for data and MC: point at the TPC entrance (cm) and direction
+  // (normalized in the constructor). Index 0 data, 1 MC
+  std::vector<double> fBeamVolumeStart[2];
+  std::vector<double> fBeamVolumeDirection[2];
+  double      fBeamVolumeRadius; // cm
+  double      fBeamVolumeLength; // cm, along the axis from BeamVolumeStart
   int         fCosmicsTruthMode; // 0 none, 1 only cosmics matched to saved reco objects, 2 all
   bool        fSaveUnassociatedHits;
   double      fUnassociatedHitsRadius; // cm, 2D distance in each plane
@@ -234,8 +248,12 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fSaveSpacePoints(p.get<bool>("SaveSpacePoints", true)),
   fSaveTrackSpacePoints(p.get<bool>("SaveTrackSpacePoints", false)),
   // the old Cosmics flag saved every primary PFParticle completely
-  fCosmicsMode(p.get<int>("CosmicsMode", p.get<bool>("Cosmics", false) ? 3 : 0)),
+  fCosmicsMode(p.get<int>("CosmicsMode", p.get<bool>("Cosmics", false) ? 4 : 0)),
   fCosmicsRadius(p.get<double>("CosmicsRadius", 50.)),
+  fBeamVolumeStart{p.get<std::vector<double>>("BeamVolumeStartData"), p.get<std::vector<double>>("BeamVolumeStartMC")},
+  fBeamVolumeDirection{p.get<std::vector<double>>("BeamVolumeDirectionData"), p.get<std::vector<double>>("BeamVolumeDirectionMC")},
+  fBeamVolumeRadius(p.get<double>("BeamVolumeRadius", 50.)),
+  fBeamVolumeLength(p.get<double>("BeamVolumeLength", 700.)),
   fCosmicsTruthMode(p.get<int>("CosmicsTruthMode", 1)),
   fSaveUnassociatedHits(p.get<bool>("SaveUnassociatedHits", true)),
   fUnassociatedHitsRadius(p.get<double>("UnassociatedHitsRadius", 30.)),
@@ -254,6 +272,15 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fBunch(NULL),
   fIsMC(false),
   fNEvents(0){
+
+  for(int k = 0; k < 2; k++){
+    if(fBeamVolumeStart[k].size() != 3 || fBeamVolumeDirection[k].size() != 3)
+      throw cet::exception("CreateHighlandMiniTree") << "BeamVolumeStart{Data,MC} and BeamVolumeDirection{Data,MC} must have 3 components";
+    std::vector<double>& dir = fBeamVolumeDirection[k];
+    const double norm = std::sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+    if(norm <= 0)throw cet::exception("CreateHighlandMiniTree") << "BeamVolumeDirection{Data,MC} cannot be zero";
+    for(double& d : dir)d /= norm;
+  }
 
   std::vector<int> trajPDGs = p.get<std::vector<int>>("TrueTrajPDGs", {321,-321});
   fTrueTrajPDGs.insert(trajPDGs.begin(), trajPDGs.end());
@@ -1079,16 +1106,26 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsInfo(art::Event const 
   int cosmics = 0; 
   int detailed = 0;
 
-  //CosmicsMode: 1 summary (no hits, trajectory points nor space points), 2 complete only near
-  //the beam slice (CosmicsRadius), 3 complete. The full dump events are complete
-  const int mode = fFullDump ? 3 : fCosmicsMode;
+  //CosmicsMode: each level includes the previous one
+  //  1 summary for all (no hits, trajectory points nor space points)
+  //  2 complete if near the beam slice (CosmicsRadius around the ends of all its particles)
+  //  3 complete also if it crosses the beam volume (does not depend on the beam slice)
+  //  4 complete for all
+  //The criteria use the space points of the whole hierarchy of the cosmic. The full dump events are complete
+  const int mode = fFullDump ? 4 : fCosmicsMode;
 
   //look for interesting cosmics and add them to the particle vector if they have not been added previously
   for(const recob::PFParticle& ls_part : (*pfpHandle)){
     if(GetRecoParticle(bunch, ls_part.Self()))continue;
     if(!IsInterestingCosmic(evt,&ls_part))continue;
     cosmics++;
-    fFillDetail = mode == 3 || (mode == 2 && IsNearBeamSlice(evt, &ls_part));
+    if(mode >= 4)fFillDetail = true;
+    else if(mode >= 2){
+      std::vector<art::Ptr<recob::SpacePoint>> sps;
+      GetHierarchySpacePoints(*pfpHandle, ls_part, sps);
+      fFillDetail = IsNearBeamSlice(sps) || (mode >= 3 && IsInBeamVolume(sps));
+    }
+    else fFillDetail = false;
     if(fFillDetail)detailed++;
     FillParticleInfo(evt, pfpHandle, &ls_part, trueParticles, bunch, -1, false);
   }
@@ -1097,20 +1134,60 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsInfo(art::Event const 
 }
 
 //*****************************************************************************
-bool highlandAnalysis::CreateHighlandMiniTree::IsNearBeamSlice(art::Event const &evt, const recob::PFParticle* ls_part){
+void highlandAnalysis::CreateHighlandMiniTree::GetHierarchySpacePoints(const std::vector<recob::PFParticle>& pfps,
+								       const recob::PFParticle& ls_part,
+								       std::vector<art::Ptr<recob::SpacePoint>>& sps){
 //*****************************************************************************
 
-  //minimum distance between the space points of the PFParticle and the ends of the beam slice
+  //PFParticle::Self() and Daughters() are indices in the collection
+  const auto& own = fPFPSpacePoints->at(ls_part.Self());
+  sps.insert(sps.end(), own.begin(), own.end());
+  for(size_t dau : ls_part.Daughters())
+    if(dau < pfps.size())GetHierarchySpacePoints(pfps, pfps[dau], sps);
+}
+
+//*****************************************************************************
+bool highlandAnalysis::CreateHighlandMiniTree::IsNearBeamSlice(const std::vector<art::Ptr<recob::SpacePoint>>& sps){
+//*****************************************************************************
+
+  //minimum distance between the space points and the ends of all the beam-slice particles
   const std::vector<geo::Point_t> ends = GetBeamSliceEnds(fBunch);
   if(ends.empty())return false;
   const double r2 = fCosmicsRadius*fCosmicsRadius;
 
-  for(const art::Ptr<recob::SpacePoint>& sp : fPFPSpacePoints->at(ls_part->Self())){
+  for(const art::Ptr<recob::SpacePoint>& sp : sps){
     const double* xyz = sp->XYZ();
     for(const geo::Point_t& e : ends){
       const double dx = xyz[0]-e.X(), dy = xyz[1]-e.Y(), dz = xyz[2]-e.Z();
       if(dx*dx + dy*dy + dz*dz < r2)return true;
     }
+  }
+  return false;
+}
+
+//*****************************************************************************
+bool highlandAnalysis::CreateHighlandMiniTree::IsInBeamVolume(const std::vector<art::Ptr<recob::SpacePoint>>& sps){
+//*****************************************************************************
+
+  //cylinder of radius BeamVolumeRadius around the nominal beam axis (different for data and
+  //MC), from BeamVolumeStart to BeamVolumeLength along it
+  const std::vector<double>& start = fBeamVolumeStart[fIsMC ? 1 : 0];
+  const std::vector<double>& dir   = fBeamVolumeDirection[fIsMC ? 1 : 0];
+  const double r2 = fBeamVolumeRadius*fBeamVolumeRadius;
+  for(const art::Ptr<recob::SpacePoint>& sp : sps){
+    const double* xyz = sp->XYZ();
+    double d[3], t = 0;
+    for(int i = 0; i < 3; i++){
+      d[i] = xyz[i] - start[i];
+      t += d[i]*dir[i];
+    }
+    if(t < 0 || t > fBeamVolumeLength)continue;
+    double perp2 = 0;
+    for(int i = 0; i < 3; i++){
+      const double c = d[i] - t*dir[i];
+      perp2 += c*c;
+    }
+    if(perp2 < r2)return true;
   }
   return false;
 }
