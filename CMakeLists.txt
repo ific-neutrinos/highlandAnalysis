@@ -34,7 +34,7 @@ art_make(BASENAME_ONLY
   larreco::RecoAlg
   ROOT_BASIC_LIB_LIST
   ProtoDUNEUtilities
-  ProtoDUNEDataUtils
+  duneprototypes::ProtoDUNEDataUtils
   lardataobj::RawData
   geant4reweight::ReweightBaseLib
   geant4reweight::PropBaseLib
