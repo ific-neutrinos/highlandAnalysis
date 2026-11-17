@@ -3,8 +3,8 @@
 #
 #   submit.sh <mc|data> <N> <INPUT_TAR_DIR_LOCAL> [nevents]
 #
-# justIN escribe en /pnfs/dune/scratch/users/$USER/fnal/<workflow>/<stage>/<lote>/ (destino
-# .../fnal más las subcarpetas que añade él, igual que en el workflow 23119); al acabar, collect.sh <workflow> la mueve a pdsp/<mode>/<AAAAMMDD>/ (fecha de
+# justIN escribe en /pnfs/dune/scratch/users/$USER/fnal/<workflow>/<stage>/<lote>/: el destino
+# es .../users/$USER y "fnal/<workflow>/<stage>" lo añade él (workflows 23119 y 23295); al acabar, collect.sh <workflow> la mueve a pdsp/<mode>/<AAAAMMDD>/ (fecha de
 # lanzamiento). Este script apunta "<workflow> <mode> <fecha>" en workflows.txt.
 # Variables opcionales: IMAGE (--image, hace falta SL7 para dunesw v09), RSS_MIB,
 # WALL_SECONDS, DRYRUN=1 (solo imprime el comando).
@@ -16,7 +16,7 @@ MODE=$1; N=$2; TARDIR=$3; NEV=${4:--1}
 HERE="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DATE=$(date +%Y%m%d)
 WFFILE=$(mktemp)
-DEST="https://fndcadoor.fnal.gov:2880/dune/scratch/users/$USER/fnal"
+DEST="https://fndcadoor.fnal.gov:2880/dune/scratch/users/$USER"
 
 CMD=(justin simple-workflow
      --description "pdsp minitree $MODE $DATE"
