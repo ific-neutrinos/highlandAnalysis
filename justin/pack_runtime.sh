@@ -9,7 +9,7 @@
 #   pdsp_runtime/fcl/        CreateHighlandMiniTree*.fcl
 #   pdsp_runtime/data/       dEdxrestemplates.root
 #   pdsp_runtime/lists/      las listas de make_filelist.sh
-#   pdsp_runtime/highland/{highland,highlandPD}   instalaciones (sin build/ ni .git)
+#   pdsp_runtime/highland/{highland,highlandPD}   árboles completos (menos .git)
 set -eu
 [[ $# -lt 1 ]] && { sed -n '2,13p' "$0"; exit 1; }
 LISTS=$1
@@ -44,8 +44,10 @@ cp "$LISTS"/*.txt "$RT/lists/"
 for pkg in highland highlandPD; do
     src="$MRB_INSTALL/highland/$pkg"
     [[ -d "$src" ]] || { echo "ERROR: no existe $src"; exit 1; }
-    # "$src/" (con barra): copia el contenido aunque $src sea un enlace simbólico
-    rsync -a --exclude build --exclude .git --exclude '*.o' "$src/" "$RT/highland/$pkg/"
+    # Árbol completo (menos .git): seleccionar ficheros acaba fallando en la grid (rutas de
+    # getenv, datos, cabeceras...). "$src/" con barra: copia el contenido aunque $src sea un
+    # enlace simbólico.
+    rsync -a --exclude .git "$src/" "$RT/highland/$pkg/"
 done
 
 tar -C "$TMP" -czf "$OUT" pdsp_runtime
