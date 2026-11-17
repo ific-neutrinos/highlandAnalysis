@@ -700,8 +700,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillForcedTrack(art::Event const 
     if(plane != 2 && !fSaveHitsAllPlanes)continue;
     for(size_t ihit = 0; ihit < cal.dQdx().size(); ihit++){
       if(!fSaveForcedTrackHits){
-	dEdx.push_back(cal.dEdx().at(ihit));
-	ResRange.push_back(cal.ResidualRange().at(ihit));
+	dEdx.push_back((Float_t)cal.dEdx().at(ihit));             //rounded as in AnaHitPD (as before),
+	ResRange.push_back((Float_t)cal.ResidualRange().at(ihit)); //so the chi2 does not depend on SaveForcedTrackHits
 	continue;
       }
       AnaHitPD hit;
