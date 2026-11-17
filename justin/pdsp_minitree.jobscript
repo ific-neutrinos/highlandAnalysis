@@ -1,0 +1,125 @@
+#!/bin/bash
+# justIN jobscript: ProtoDUNE-SP (dunesw v09_56_00d00) + CreateHighlandMiniTree -> minitree.
+#
+# Se lanza con --monte-carlo N (datos y MC igual, aunque parte del MC esté en MetaCat): cada
+# trabajo recibe un contador k y procesa la línea k de una lista de URLs xrootd que va en el
+# tarball (hecha con make_filelist.sh desde SAM, con prestage).
+#
+# Variables (--env):
+#   MODE      mc | data                          (obligatoria)
+#   LIST      lista dentro de pdsp_runtime/lists (por defecto filelist_${MODE}.txt)
+#   NEVENTS   eventos por fichero                (por defecto -1, todos)
+#   DEBUG_GDB 1: corre lar bajo gdb y sale
+#   INPUT_TAR_DIR_LOCAL: directorio del tarball en cvmfs (justin-cvmfs-upload)
+#
+# Salidas: minitree_<entrada>.root y stats_<entrada>.txt (una línea clave=valor por
+# trabajo, para summarize.sh).
+#
+# Sin "set -e"/"set -u" antes de los setup: UPS, setup_dune.sh y los setup de HighLAND no
+# los toleran.
+set -x
+
+NEVENTS=${NEVENTS:--1}
+case "${MODE:-}" in
+    mc|data) ;;
+    *) echo "ERROR: MODE tiene que ser mc o data (--env MODE=...)"; exit 1 ;;
+esac
+
+RT="$INPUT_TAR_DIR_LOCAL/pdsp_runtime"
+LIST="$RT/lists/${LIST:-filelist_${MODE}.txt}"
+
+# 1. Contador de justIN -> línea de la lista
+did_pfn_rse=$("$JUSTIN_PATH/justin-get-file")
+if [[ -z "$did_pfn_rse" ]]; then
+    echo "No files available"
+    exit 0
+fi
+read -r did pfn rse <<< "$did_pfn_rse"
+echo "justIN DID: $did  PFN: $pfn"
+
+# El contador es el último número del DID. Comprobar el formato con justin-test-jobscript.
+[[ -f "$LIST" ]] || { echo "ERROR: no existe la lista $LIST"; exit 1; }
+counter=$(echo "$did" | grep -o '[0-9]\+' | tail -1)
+counter=$((10#${counter:-0}))
+input_url=$(grep -v -e '^#' -e '^[[:space:]]*$' "$LIST" | sed -n "${counter}p")
+if [[ -z "$input_url" ]]; then
+    echo "Contador $counter fuera de la lista ($(grep -c -v -e '^#' -e '^[[:space:]]*$' "$LIST") ficheros): nada que hacer"
+    echo "$pfn" > justin-processed-pfns.txt
+    exit 0
+fi
+echo "Processing [$counter]: $input_url"
+
+# 2. Entorno DUNE (SL7: dunesw v09 necesita la imagen de SL7)
+unset prod_db
+set +eu
+source /cvmfs/dune.opensciencegrid.org/products/dune/setup_dune.sh
+setup dunesw v09_56_00d00 -q e20:prof
+
+# 3. HighLAND (el setup.sh de highland no carga sus productos porque ROOTSYS ya está definido)
+HL_SETUP="$RT/highland/highland/scripts/setup.sh"
+HLPD_SETUP="$RT/highland/highlandPD/scripts/setup.sh"
+[[ -f "$HL_SETUP" && -f "$HLPD_SETUP" ]] || { echo "ERROR: faltan los setup de HighLAND en $RT"; exit 1; }
+source "$HL_SETUP"
+source "$HLPD_SETUP"
+
+# Librerías del área local (el módulo y lo que necesite de protoduneana local), por delante
+# de las de cvmfs. art busca los módulos en CET_PLUGIN_PATH.
+export LD_LIBRARY_PATH="$RT/lib:$LD_LIBRARY_PATH"
+export CET_PLUGIN_PATH="$RT/lib:$CET_PLUGIN_PATH"
+export FHICL_FILE_PATH=".:$RT/fcl:$FHICL_FILE_PATH"
+set -e
+
+which lar || { echo "ERROR: lar not found"; exit 1; }
+env | grep -i highland | grep -v -E '^(PATH|LD_LIBRARY_PATH|CMAKE_PREFIX_PATH|DYLD_LIBRARY_PATH|CET_PLUGIN_PATH)=' | sort
+
+# 4. Ficheros locales (la entrada se lee por xrootd, no se copia)
+FCL="CreateHighlandMiniTree_${MODE}.fcl"
+OUT_DEFAULT="minitree_${MODE}.root"   # fileName del TFileService en el fcl
+cp "$RT/fcl/"CreateHighlandMiniTree*.fcl . || { echo "ERROR: fcl copy failed"; exit 1; }
+cp "$RT/data/dEdxrestemplates.root" .     || { echo "ERROR: data copy failed"; exit 1; }
+
+# 5. lar
+LAR_CMD=(lar -c "$FCL" -s "$input_url" -n "$NEVENTS")
+if [[ -n "${DEBUG_GDB:-}" ]]; then
+    set +e
+    gdb -batch -ex "catch throw logic_error" -ex run -ex "bt 15" --args "${LAR_CMD[@]}" 2>&1 | tail -80
+    exit 1
+fi
+
+TIME_CMD=()
+[[ -x /usr/bin/time ]] && TIME_CMD=(/usr/bin/time -v -o time.txt)
+set +e
+start=$(date +%s)
+"${TIME_CMD[@]}" "${LAR_CMD[@]}" > lar.log 2>&1
+lar_status=$?
+end=$(date +%s)
+set -e
+tail -200 lar.log
+
+input_name=$(basename "$input_url" .root | sed 's/[^A-Za-z0-9_.-]/_/g')
+output_file="minitree_${input_name}.root"
+stats_file="stats_${input_name}.txt"
+
+# 6. Estadísticas (se escriben también si lar falla, para contarlo en el resumen)
+nev=$(grep -m1 'TrigReport Events total' lar.log | sed -n 's/.*total = *\([0-9]*\).*/\1/p')
+maxrss_kb=$( [[ -f time.txt ]] && sed -n 's/.*Maximum resident set size (kbytes): *//p' time.txt )
+cpu_user=$(  [[ -f time.txt ]] && sed -n 's/.*User time (seconds): *//p' time.txt )
+cpu_sys=$(   [[ -f time.txt ]] && sed -n 's/.*System time (seconds): *//p' time.txt )
+out_bytes=$( [[ -s "$OUT_DEFAULT" ]] && stat -c %s "$OUT_DEFAULT" || echo 0 )
+echo "mode=$MODE counter=$counter status=$lar_status events=${nev:-0} wall_s=$((end-start)) cpu_user_s=${cpu_user:-NA} cpu_sys_s=${cpu_sys:-NA} maxrss_kb=${maxrss_kb:-NA} out_bytes=$out_bytes host=$(hostname) rse=$rse input=$input_url" > "$stats_file"
+cat "$stats_file"
+
+if [[ $lar_status -ne 0 ]]; then
+    echo "ERROR: lar failed ($lar_status)"
+    exit 1
+fi
+if [[ ! -s "$OUT_DEFAULT" ]]; then
+    echo "ERROR: $OUT_DEFAULT was not produced"
+    exit 1
+fi
+mv "$OUT_DEFAULT" "$output_file"
+
+# 7. Marcar el contador como procesado
+echo "$pfn" > justin-processed-pfns.txt
+echo "Successfully produced $output_file"
+exit 0
