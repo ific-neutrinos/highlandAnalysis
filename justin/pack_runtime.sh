@@ -44,7 +44,8 @@ cp "$LISTS"/*.txt "$RT/lists/"
 for pkg in highland highlandPD; do
     src="$MRB_INSTALL/highland/$pkg"
     [[ -d "$src" ]] || { echo "ERROR: no existe $src"; exit 1; }
-    rsync -a --exclude build --exclude .git --exclude '*.o' "$src" "$RT/highland/"
+    # "$src/" (con barra): copia el contenido aunque $src sea un enlace simbólico
+    rsync -a --exclude build --exclude .git --exclude '*.o' "$src/" "$RT/highland/$pkg/"
 done
 
 tar -C "$TMP" -czf "$OUT" pdsp_runtime
