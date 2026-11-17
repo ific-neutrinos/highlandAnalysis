@@ -30,6 +30,7 @@
 #include "art/Framework/Principal/SubRun.h"
 #include "canvas/Utilities/InputTag.h"
 #include "canvas/Persistency/Common/FindManyP.h"
+#include "canvas/Persistency/Common/FindOneP.h"
 #include "fhiclcpp/ParameterSet.h"
 #include "messagefacility/MessageLogger/MessageLogger.h"
 
@@ -48,6 +49,10 @@
 #include "lardata/DetectorInfoServices/DetectorClocksService.h"
 #include "lardataobj/RecoBase/Cluster.h"
 #include "lardataobj/AnalysisBase/T0.h"
+#include "lardataobj/AnalysisBase/Calorimetry.h"
+#include "lardataobj/RecoBase/PFParticleMetadata.h"
+#include "lardataobj/RecoBase/Slice.h"
+#include "lardataobj/RecoBase/Vertex.h"
 #include "lardataobj/RawData/RDTimeStamp.h"
 #include "lardataobj/RawData/RawDigit.h"
 #include "duneprototypes/Protodune/singlephase/DataUtils/ProtoDUNEDataUtils.h"
@@ -141,7 +146,21 @@ public:
 
   AnaParticlePD* GetRecoParticle        (AnaBunch* bunch, int ID);
   AnaTrueParticlePD* GetTrueParticle    (std::vector<AnaTrueParticleB*>& trueParticles, int ID);
-  int GetTrueParticleIDFromPFP          (art::Event const &evt, const recob::PFParticle* ls_part);
+  int GetTrueParticleIDFromPFP          (art::Event const &evt, const recob::PFParticle* ls_part,
+					 const std::vector<art::Ptr<recob::Hit>>& ls_part_hits);
+
+  //Same results as the ProtoDUNEPFParticleUtils/ProtoDUNETrackUtils functions of the same name, but with
+  //the associations of the event built once (on first use) instead of in every call: with hundreds of
+  //PFParticles per event (cosmics), the utilities took ~8 s per event
+  std::vector<art::Ptr<recob::Hit>> GetPFParticleHits(art::Event const &evt, const recob::PFParticle &part, int plane = -1);
+  const recob::Track*  GetPFParticleTrack (art::Event const &evt, const recob::PFParticle &part, bool forced = false);
+  const recob::Shower* GetPFParticleShower(art::Event const &evt, const recob::PFParticle &part);
+  std::map<std::string,float> GetPFParticleMetaData(art::Event const &evt, const recob::PFParticle &part);
+  unsigned short GetPFParticleSliceIndex(art::Event const &evt, const recob::PFParticle &part);
+  std::vector<anab::T0> GetPFParticleT0 (art::Event const &evt, const recob::PFParticle &part);
+  TVector3 GetPFParticleVertex(art::Event const &evt, const recob::PFParticle &part);
+  std::vector<anab::Calorimetry> GetRecoTrackCalorimetry(art::Event const &evt, const recob::Track &track,
+							 const std::string& trackTag, const std::string& caloTag);
 
   bool IsInterestingCosmic(art::Event const &evt, const recob::PFParticle* ls_part);
   /// Space points of a PFParticle and all its descendants
@@ -162,6 +181,14 @@ public:
   std::pair<std::array<float,4>,int> GetCNNOutputFromPFParticleFromPlane(const art::Event &evt,
 									  const recob::PFParticle &part,
 									  int planeID);
+
+  /// association of the event, built on first use (reset in BuildEventCaches)
+  template <class T, class P>
+  const art::FindManyP<T>& LazyAssn(std::unique_ptr<art::FindManyP<T>>& assn, art::Event const &evt,
+				    const std::string& productTag, const std::string& assnTag){
+    if(!assn)assn = std::make_unique<art::FindManyP<T>>(evt.getValidHandle<std::vector<P>>(productTag), evt, assnTag);
+    return *assn;
+  }
   
   
 private:
@@ -179,6 +206,18 @@ private:
   std::unique_ptr<art::FindManyP<recob::SpacePoint>> fPFPSpacePoints;
   std::unique_ptr<art::FindManyP<recob::Hit>> fSpacePointHits;
   std::unique_ptr<art::FindManyP<recob::Wire>> fHitWires;
+  // associations used once per PFParticle, built on first use in each event
+  std::unique_ptr<art::FindManyP<recob::Cluster>> fPFPClusters;
+  std::unique_ptr<art::FindManyP<recob::Hit>> fClusterHits;
+  std::unique_ptr<art::FindManyP<recob::Track>> fPFPTracks;
+  std::unique_ptr<art::FindManyP<recob::Track>> fPFPForcedTracks;
+  std::unique_ptr<art::FindManyP<recob::Shower>> fPFPShowers;
+  std::unique_ptr<art::FindManyP<larpandoraobj::PFParticleMetadata>> fPFPMetaData;
+  std::unique_ptr<art::FindManyP<recob::Vertex>> fPFPVertices;
+  std::unique_ptr<art::FindOneP<recob::Slice>> fPFPSlice;   bool fPFPSliceFailed;
+  std::unique_ptr<art::FindManyP<anab::T0>> fPFPT0;         bool fPFPT0Failed;
+  std::map<std::string, std::unique_ptr<art::FindManyP<anab::Calorimetry>>> fTrackCalo; // key: track tag + calo tag
+  std::set<std::string> fTrackCaloFailed;
   // MC truth of all the hits, built in a single backtracking pass (MC only): dominant particle of
   // each hit (index = key), hits per plane where each particle dominates and energy it deposits in the
   // collection plane (saved with SaveTrueHitCounts). fHitTrackIDs (all the particles contributing to each
@@ -488,6 +527,19 @@ void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const
   auto spHandle = evt.getValidHandle<std::vector<recob::SpacePoint>>(fPFParticleTag);
   fSpacePointHits = std::make_unique<art::FindManyP<recob::Hit>>(spHandle, evt, fPFParticleTag);
   fHitWires.reset();
+  fPFPClusters.reset();
+  fClusterHits.reset();
+  fPFPTracks.reset();
+  fPFPForcedTracks.reset();
+  fPFPShowers.reset();
+  fPFPMetaData.reset();
+  fPFPVertices.reset();
+  fPFPSlice.reset();
+  fPFPSliceFailed = false;
+  fPFPT0.reset();
+  fPFPT0Failed = false;
+  fTrackCalo.clear();
+  fTrackCaloFailed.clear();
   if(fSaveHitSignal)fHitWires = std::make_unique<art::FindManyP<recob::Wire>>(hitHandle, evt, fHitTag);
   fClockData.emplace(art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(evt));
 
@@ -603,7 +655,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillForcedTrack(art::Event const 
   //track fit forced on all the PFParticles (pandora2Track), for the shower-like ones: kept apart
   //in AnaForcedTrackPD so that the analyses do not change
   part->ForcedTrack.clear();
-  const recob::Track* track = pfpUtil.GetPFParticleTrack(*ls_part, evt, fPFParticleTag, fForcedTrackTag);
+  const recob::Track* track = GetPFParticleTrack(evt, *ls_part, true);
   if(!track)return;
 
   AnaForcedTrackPD ft;
@@ -629,7 +681,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillForcedTrack(art::Event const 
 
   //calorimetry (with SCE corrections, as Hits of the tracks)
   std::vector<double> dEdx, ResRange;
-  for(const anab::Calorimetry& cal : trackUtil.GetRecoTrackCalorimetry(*track, evt, fForcedTrackTag, fForcedCalorimetryTag)){
+  for(const anab::Calorimetry& cal : GetRecoTrackCalorimetry(evt, *track, fForcedTrackTag, fForcedCalorimetryTag)){
     const int plane = cal.PlaneID().Plane;
     if(plane < 0 || plane > 2)continue;
     if(plane != 2 && !fSaveHitsAllPlanes)continue;
@@ -885,15 +937,15 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   part->Generation = generation;
 
   //get number of hits of the PFP regardless track or shower
-  const std::vector<art::Ptr<recob::Hit>> ls_part_hits = pfpUtil.GetPFParticleHits_Ptrs(*ls_part, evt, fPFParticleTag);
+  const std::vector<art::Ptr<recob::Hit>> ls_part_hits = GetPFParticleHits(evt, *ls_part);
   part->NHits = ls_part_hits.size();
 
   //if mc try to match a truth particle (uses BeamOrigin)
   if(!evt.isRealData())TrueRecoMatching(evt, ls_part, ls_part_hits, part, trueParticles);
 
   // Determine if the particle is track-like or shower-like
-  const recob::Track*  track  = pfpUtil.GetPFParticleTrack(*ls_part,evt,fPFParticleTag,fTrackerTag);
-  const recob::Shower* shower = pfpUtil.GetPFParticleShower(*ls_part,evt,fPFParticleTag,fShowerTag);
+  const recob::Track*  track  = GetPFParticleTrack(evt, *ls_part);
+  const recob::Shower* shower = GetPFParticleShower(evt, *ls_part);
 
   //fill track-like or shower-like info. If the PFParticle has both, the track wins
   //(FillShowerInfo would overwrite Type, positions, direction and length)
@@ -977,8 +1029,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTrackInfo(art::Event const &e
   for(int iplane = 0; iplane < 3; iplane++)part->Hits[iplane].clear();
 
   //get calo information
-  std::vector<anab::Calorimetry> calo = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTag);
-  std::vector<anab::Calorimetry> calonosce = trackUtil.GetRecoTrackCalorimetry(*track, evt, fTrackerTag, fCalorimetryTagNoSCE);
+  std::vector<anab::Calorimetry> calo = GetRecoTrackCalorimetry(evt, *track, fTrackerTag, fCalorimetryTag);
+  std::vector<anab::Calorimetry> calonosce = GetRecoTrackCalorimetry(evt, *track, fTrackerTag, fCalorimetryTagNoSCE);
 
   //safety check
   if(calo.empty())return;
@@ -1156,18 +1208,22 @@ void highlandAnalysis::CreateHighlandMiniTree::FillSpacePoints(const recob::PFPa
 void highlandAnalysis::CreateHighlandMiniTree::FillPandoraInfo(art::Event const &evt, const recob::PFParticle* ls_part, AnaParticlePD* part){
 //*****************************************************************************
 
-  part->SliceID       = pfpUtil.GetPFParticleSliceIndex(*ls_part, evt, fPFParticleTag);
-  part->IsClearCosmic = pfpUtil.IsClearCosmic(*ls_part, evt, fPFParticleTag);
+  //same as pfpUtil.GetPFParticleSliceIndex, IsClearCosmic, GetPFParticleMetaData, GetPFParticleT0,
+  //GetBeamCosmicScore and GetPFParticleVertex, with the associations built once per event
+  const std::map<std::string,float> meta = GetPFParticleMetaData(evt, *ls_part);
 
-  const std::map<std::string,float> meta = pfpUtil.GetPFParticleMetaData(*ls_part, evt, fPFParticleTag);
+  part->SliceID       = GetPFParticleSliceIndex(evt, *ls_part);
+  part->IsClearCosmic = meta.find("IsClearCosmic") != meta.end();
+
   auto score = meta.find("TrackScore");
   if(score != meta.end())part->PandoraTrackScore = score->second;
 
-  const std::vector<anab::T0> t0 = pfpUtil.GetPFParticleT0(*ls_part, evt, fPFParticleTag);
+  const std::vector<anab::T0> t0 = GetPFParticleT0(evt, *ls_part);
   if(!t0.empty())part->T0 = t0[0].Time();
 
-  part->BeamCosmicScore = pfpUtil.GetBeamCosmicScore(*ls_part, evt, fPFParticleTag);
-  const TVector3 vtx = pfpUtil.GetPFParticleVertex(*ls_part, evt, fPFParticleTag, fTrackerTag);
+  auto beamScore = meta.find("TestBeamScore");
+  part->BeamCosmicScore = beamScore != meta.end() ? beamScore->second : -999.;
+  const TVector3 vtx = GetPFParticleVertex(evt, *ls_part);
   for(int i = 0; i < 3; i++)part->PandoraVertex[i] = vtx[i];
 }
 
@@ -1469,7 +1525,7 @@ void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const
   bool found = false;
 
   //get the true particle ID that generated this reco particle
-  int truePartID = GetTrueParticleIDFromPFP(evt, ls_part);
+  int truePartID = GetTrueParticleIDFromPFP(evt, ls_part, ls_part_hits);
 
   //purity and completeness of the matching, same definitions as ProtoDUNETruthUtils::GetPurity and
   //GetCompleteness (hits with any contribution of the matched particle, without eve IDs), from the
@@ -1550,14 +1606,167 @@ AnaTrueParticlePD* highlandAnalysis::CreateHighlandMiniTree::GetTrueParticle(std
 }
 
 //*****************************************************************************
-int highlandAnalysis::CreateHighlandMiniTree::GetTrueParticleIDFromPFP(art::Event const &evt, const recob::PFParticle* ls_part){
+int highlandAnalysis::CreateHighlandMiniTree::GetTrueParticleIDFromPFP(art::Event const &evt, const recob::PFParticle* ls_part,
+									const std::vector<art::Ptr<recob::Hit>>& ls_part_hits){
 //*****************************************************************************
 
-  //look for the MCParticle that most probably generated the PFParticle
-  const simb::MCParticle* ls_truePart = truthUtil.GetMCParticleFromPFParticle(*fClockData, *ls_part, evt, fPFParticleTag);
+  //look for the MCParticle that most probably generated the PFParticle: same as
+  //truthUtil.GetMCParticleFromPFParticle, with the hits of the PFParticle already at hand
+  if(evt.isRealData())return -1;
+  std::vector<const recob::Hit*> hits;
+  hits.reserve(ls_part_hits.size());
+  for(const art::Ptr<recob::Hit>& h : ls_part_hits)hits.push_back(h.get());
 
-  if(ls_truePart)return ls_truePart->TrackId();
-  else return -1;
+  std::vector<std::pair<const simb::MCParticle*, double>> list;
+  if(std::abs(ls_part->PdgCode()) == 11 || ls_part->PdgCode() == 22)list = truthUtil.GetMCParticleListFromShowerHits(*fClockData, hits);
+  else                                                         list = truthUtil.GetMCParticleListFromTrackHits(*fClockData, hits);
+
+  if(!list.empty() && list[0].first)return list[0].first->TrackId();
+  return -1;
+}
+
+//*****************************************************************************
+std::vector<art::Ptr<recob::Hit>> highlandAnalysis::CreateHighlandMiniTree::GetPFParticleHits(art::Event const &evt,
+											   const recob::PFParticle &part, int plane){
+//*****************************************************************************
+
+  //as pfpUtil.GetPFParticleHits_Ptrs (plane < 0) and GetPFParticleHitsFromPlane_Ptrs: hits of the
+  //clusters of the PFParticle. As there, the cluster-hit association is indexed with Cluster::ID()
+  const auto& pfpClusters = LazyAssn<recob::Cluster, recob::PFParticle>(fPFPClusters, evt, fPFParticleTag, fPFParticleTag);
+  const auto& clusterHits = LazyAssn<recob::Hit, recob::Cluster>(fClusterHits, evt, fPFParticleTag, fPFParticleTag);
+
+  std::vector<art::Ptr<recob::Hit>> hits;
+  for(const art::Ptr<recob::Cluster>& cluster : pfpClusters.at(part.Self())){
+    for(const art::Ptr<recob::Hit>& hit : clusterHits.at(cluster->ID())){
+      if(plane >= 0 && (int)hit->WireID().asPlaneID().Plane != plane)continue;
+      hits.push_back(hit);
+    }
+  }
+  return hits;
+}
+
+//*****************************************************************************
+const recob::Track* highlandAnalysis::CreateHighlandMiniTree::GetPFParticleTrack(art::Event const &evt,
+										 const recob::PFParticle &part, bool forced){
+//*****************************************************************************
+
+  //as pfpUtil.GetPFParticleTrack, with TrackerTag or ForcedTrackTag
+  const auto& tracks = forced ?
+    LazyAssn<recob::Track, recob::PFParticle>(fPFPForcedTracks, evt, fPFParticleTag, fForcedTrackTag) :
+    LazyAssn<recob::Track, recob::PFParticle>(fPFPTracks,       evt, fPFParticleTag, fTrackerTag);
+  const auto& v = tracks.at(part.Self());
+  return v.empty() ? nullptr : v.at(0).get();
+}
+
+//*****************************************************************************
+const recob::Shower* highlandAnalysis::CreateHighlandMiniTree::GetPFParticleShower(art::Event const &evt,
+										   const recob::PFParticle &part){
+//*****************************************************************************
+
+  //as pfpUtil.GetPFParticleShower
+  const auto& showers = LazyAssn<recob::Shower, recob::PFParticle>(fPFPShowers, evt, fPFParticleTag, fShowerTag);
+  const auto& v = showers.at(part.Self());
+  return v.empty() ? nullptr : v.at(0).get();
+}
+
+//*****************************************************************************
+std::map<std::string,float> highlandAnalysis::CreateHighlandMiniTree::GetPFParticleMetaData(art::Event const &evt,
+											   const recob::PFParticle &part){
+//*****************************************************************************
+
+  //as pfpUtil.GetPFParticleMetaData (also throws if the PFParticle has no metadata)
+  const auto& meta = LazyAssn<larpandoraobj::PFParticleMetadata, recob::PFParticle>(fPFPMetaData, evt, fPFParticleTag, fPFParticleTag);
+  return meta.at(part.Self()).at(0)->GetPropertiesMap();
+}
+
+//*****************************************************************************
+unsigned short highlandAnalysis::CreateHighlandMiniTree::GetPFParticleSliceIndex(art::Event const &evt,
+										 const recob::PFParticle &part){
+//*****************************************************************************
+
+  //as pfpUtil.GetPFParticleSliceIndex: the slice if there are slice associations, otherwise the metadata
+  if(!fPFPSliceFailed){
+    try{
+      if(!fPFPSlice)
+	fPFPSlice = std::make_unique<art::FindOneP<recob::Slice>>(evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag),
+								    evt, fPFParticleTag);
+      const recob::Slice* slice = fPFPSlice->at(part.Self()).get();
+      if(slice)return slice->ID();
+    }
+    catch(...){
+      fPFPSliceFailed = true;
+      fPFPSlice.reset();
+    }
+  }
+  const std::map<std::string,float> meta = GetPFParticleMetaData(evt, part);
+  auto it = meta.find("SliceIndex");
+  return it != meta.end() ? static_cast<unsigned short>(it->second) : 9999;
+}
+
+//*****************************************************************************
+std::vector<anab::T0> highlandAnalysis::CreateHighlandMiniTree::GetPFParticleT0(art::Event const &evt,
+										const recob::PFParticle &part){
+//*****************************************************************************
+
+  //as pfpUtil.GetPFParticleT0: empty if there are no T0 associations
+  std::vector<anab::T0> t0s;
+  if(fPFPT0Failed)return t0s;
+  try{
+    const auto& assn = LazyAssn<anab::T0, recob::PFParticle>(fPFPT0, evt, fPFParticleTag, fPFParticleTag);
+    for(const art::Ptr<anab::T0>& t : assn.at(part.Self()))t0s.push_back(*t);
+  }
+  catch(...){
+    fPFPT0Failed = true;
+    fPFPT0.reset();
+    t0s.clear();
+  }
+  return t0s;
+}
+
+//*****************************************************************************
+TVector3 highlandAnalysis::CreateHighlandMiniTree::GetPFParticleVertex(art::Event const &evt, const recob::PFParticle &part){
+//*****************************************************************************
+
+  //as pfpUtil.GetPFParticleVertex: the Pandora vertex for daughters and shower-like particles;
+  //for track-like primaries the most upstream end of the track (beam) or the highest one (cosmics)
+  const recob::Track* track = GetPFParticleTrack(evt, part);
+  if(!part.IsPrimary() || !track){
+    const auto& vertices = LazyAssn<recob::Vertex, recob::PFParticle>(fPFPVertices, evt, fPFParticleTag, fPFParticleTag);
+    const auto& v = vertices.at(part.Self());
+    if(!v.empty())return TVector3(v.at(0)->position().X(), v.at(0)->position().Y(), v.at(0)->position().Z());
+    if(fDebug)std::cout << "     PFParticle " << part.Self() << ": shower-like without vertex, default vertex" << std::endl;
+    return TVector3();
+  }
+  const TVector3 start(track->Trajectory().Start().X(), track->Trajectory().Start().Y(), track->Trajectory().Start().Z());
+  const TVector3 end  (track->Trajectory().End().X(),   track->Trajectory().End().Y(),   track->Trajectory().End().Z());
+  const std::map<std::string,float> meta = GetPFParticleMetaData(evt, part);
+  if(meta.find("IsTestBeam") != meta.end())return start.Z() < end.Z() ? start : end;
+  return start.Y() > end.Y() ? start : end;
+}
+
+//*****************************************************************************
+std::vector<anab::Calorimetry> highlandAnalysis::CreateHighlandMiniTree::GetRecoTrackCalorimetry(art::Event const &evt,
+												  const recob::Track &track,
+												  const std::string& trackTag,
+												  const std::string& caloTag){
+//*****************************************************************************
+
+  //as trackUtil.GetRecoTrackCalorimetry (the association is indexed with Track::ID(), as there)
+  std::vector<anab::Calorimetry> caloInfo;
+  const std::string key = trackTag + "/" + caloTag;
+  if(fTrackCaloFailed.count(key))return caloInfo;
+  try{
+    auto& assn = fTrackCalo[key];
+    const auto& calos = LazyAssn<anab::Calorimetry, recob::Track>(assn, evt, trackTag, caloTag);
+    for(const art::Ptr<anab::Calorimetry>& c : calos.at(track.ID()))caloInfo.push_back(*c);
+  }
+  catch(...){
+    fTrackCaloFailed.insert(key);
+    fTrackCalo.erase(key);
+    caloInfo.clear();
+    std::cerr << "No track calorimetry " << caloTag << " for tracks " << trackTag << ": empty calorimetry in this event" << std::endl;
+  }
+  return caloInfo;
 }
 
 //*****************************************************************************
@@ -1568,8 +1777,7 @@ GetCNNOutputFromPFParticleFromPlane(const art::Event &evt,
 //*****************************************************************************
 
   //get hits from plane
-  const std::vector<art::Ptr<recob::Hit>> daughterPFP_hits = 
-    pfpUtil.GetPFParticleHitsFromPlane_Ptrs(part, evt, fPFParticleTag, planeID);
+  const std::vector<art::Ptr<recob::Hit>> daughterPFP_hits = GetPFParticleHits(evt, part, planeID);
 
   //loop over hits (returned by value: before, a pointer to a local array was returned)
   std::array<float,4> cnn = {0,0,0,0};
