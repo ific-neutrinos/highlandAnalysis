@@ -274,6 +274,7 @@ private:
   art::InputTag fRawDigitTimeStampTag;
   std::vector<std::pair<UInt_t,UInt_t>> fUnstableHVTimeRanges; // same list as the unstable HV filter
   int         fFullDumpPrescale; // complete dump in 1 of every N events (0 = never)
+  int         fCompressionSettings; // of the output file: 100*algorithm + level (208 LZMA 8, 505 ZSTD 5, 101 zlib 1)
   
   int         fMaxGeneration;
   int         fMCMaxGeneration;
@@ -341,6 +342,7 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fRawDigitTimeStampTag(p.get<fhicl::ParameterSet>("DataUtils").get<art::InputTag>("RawDigitTimeStampTag")),
   fUnstableHVTimeRanges(p.get<std::vector<std::pair<UInt_t,UInt_t>>>("UnstableHVTimeRanges")),
   fFullDumpPrescale(p.get<int>("FullDumpPrescale", 0)),
+  fCompressionSettings(p.get<int>("CompressionSettings", 208)),
 
   fMaxGeneration(p.get<int>("MaxGeneration")),
   fMCMaxGeneration(p.get<int>("MCMaxGeneration")),
@@ -1818,11 +1820,11 @@ void highlandAnalysis::CreateHighlandMiniTree::beginJob(){
 //*****************************************************************************
 
   art::ServiceHandle<art::TFileService> tfs;
+  //compression of the output file, before creating the trees (their branches take it from the file)
+  tfs->file().SetCompressionSettings(fCompressionSettings);
   fTree = tfs->make<TTree>("MiniTree","event model tree");
   fspill = NULL;
   fTree->Branch("Spill", "AnaSpillPD", &fspill,64000,1);
-
-  
 }
 
 //*****************************************************************************

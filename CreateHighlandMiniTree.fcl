@@ -62,6 +62,7 @@ highlandAnalysis:
   DataUtils:              @local::standard_protodunedatautils
   UnstableHVTimeRanges:   @local::HVfilter.TimeRanges
   FullDumpPrescale:       0      # complete dump in 1 of every N events (0 = never)
+  CompressionSettings:    208    # output file: 100*algorithm + level (208 LZMA 8: the smallest; 505 ZSTD 5; 101 zlib 1)
 
   Verbose:              true   # flow of each event: one line per step, with what was found and its time
   Debug:                false  # details of each particle (true matching, ...)
