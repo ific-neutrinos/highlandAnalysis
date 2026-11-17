@@ -77,6 +77,13 @@ services.ParticleInventoryService.ParticleInventory.EveIdCalculator: "EmEveIdCal
 
 services.DetectorPropertiesService.Electronlifetime: 35000
 
+# electron lifetime from the database, as in production (protoDUNE_SP_keepup_decoder_reco_stage2.fcl).
+# The stage 2 recalibration applies it to the showers (ApplyLifetimeCorrectionShower): without it the
+# service returns 0 ("channel not found!") and the shower dE/dx is exp(x/0)
+services.LifetimeCalibService.IsMC:             false
+services.LifetimeCalibService.UseCondbLifetime: true
+services.LifetimeCalibService.LifetimeDBTag:    "v1.1"
+
 services.SpaceCharge.EnableCalEfieldSCE:  true
 services.SpaceCharge.EnableCalSpatialSCE: true
 services.SpaceCharge.EnableSimEfieldSCE:  true
