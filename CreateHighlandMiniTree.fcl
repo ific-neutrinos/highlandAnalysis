@@ -38,6 +38,7 @@ highlandAnalysis:
   # beam-slice particles, 3 complete also if it crosses the beam volume, 4 complete for all
   CosmicsMode:            3
   CosmicsRadius:          50.    # cm, distance to the ends of all the beam-slice particles (CosmicsMode >= 2)
+  CosmicsWithoutBeamSlice: false # also in events without beam slice (they are not analysed; only EventInfo, Beam, DQ and truth are needed)
   # beam axis, different for data and MC. Start: mean of the 6 GeV beam quality cuts of highlandPD
   # (pdUtils.parameters.dat). Direction: nominal value, to be measured in data and MC
   BeamVolumeStartData:     [-28.6, 424.6, 0.96]  # cm

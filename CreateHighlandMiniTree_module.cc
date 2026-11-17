@@ -252,6 +252,7 @@ private:
   bool        fSaveTrackSpacePoints; // also for tracks (one per hit with 3D, like their trajectory points)
   int         fCosmicsMode;      // 0 none, 1 summary, 2 complete near the beam slice, 3 also in the beam volume, 4 complete
   double      fCosmicsRadius;    // cm, for CosmicsMode >= 2
+  bool        fCosmicsWithoutBeamSlice; // also save cosmics in events without beam slice (not analysed)
   // beam axis, different for data and MC: point at the TPC entrance (cm) and direction
   // (normalized in the constructor). Index 0 data, 1 MC
   std::vector<double> fBeamVolumeStart[2];
@@ -320,6 +321,7 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   // the old Cosmics flag saved every primary PFParticle completely
   fCosmicsMode(p.get<int>("CosmicsMode", p.get<bool>("Cosmics", false) ? 4 : 0)),
   fCosmicsRadius(p.get<double>("CosmicsRadius", 50.)),
+  fCosmicsWithoutBeamSlice(p.get<bool>("CosmicsWithoutBeamSlice", false)),
   fBeamVolumeStart{p.get<std::vector<double>>("BeamVolumeStartData"), p.get<std::vector<double>>("BeamVolumeStartMC")},
   fBeamVolumeDirection{p.get<std::vector<double>>("BeamVolumeDirectionData"), p.get<std::vector<double>>("BeamVolumeDirectionMC")},
   fBeamVolumeRadius(p.get<double>("BeamVolumeRadius", 50.)),
@@ -478,8 +480,11 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
       PrintStep("Unassociated hits", str(bunch->UnassociatedHits.size(), " near the beam slice") + elapsed());
     }
 
-    //cosmics
-    if(fCosmicsMode > 0 || fFullDump){
+    //cosmics, only in the events with beam slice (the others are not analysed: they only count
+    //for the normalization and, in MC, the efficiency, with EventInfo, Beam and the truth)
+    const bool cosmics = (fCosmicsMode > 0 && (info.HasPandora || fCosmicsWithoutBeamSlice)) || fFullDump;
+    if(!cosmics && fCosmicsMode > 0)PrintStep("Cosmics", "not saved: no beam slice" + elapsed());
+    if(cosmics){
       FillCosmicsInfo(evt, spill->TrueParticles, bunch);
       PrintStep("Cosmics", str(fNCosmics, " saved, ", fNCosmicsDetailed, " complete (CosmicsMode ",
 			       (fFullDump ? 4 : fCosmicsMode), (fFullDump ? ", full dump" : ""), ")") + elapsed());
