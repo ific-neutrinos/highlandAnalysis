@@ -68,6 +68,11 @@ source "$HLPD_SETUP"
 export LD_LIBRARY_PATH="$RT/lib:$LD_LIBRARY_PATH"
 export CET_PLUGIN_PATH="$RT/lib:$CET_PLUGIN_PATH"
 export FHICL_FILE_PATH=".:$RT/fcl:$FHICL_FILE_PATH"
+# Cabeceras de highland para ROOT (autoparsing de los diccionarios). El setup.sh de highland
+# solo define ROOT_INCLUDE_PATH si no hay un ROOT cargado, y aquí ya lo ha cargado dunesw; sin
+# esto ROOT buscaría las cabeceras en la ruta de compilación (/exp/dune/app/...), que en la grid
+# no existe.
+export ROOT_INCLUDE_PATH="$RT/highland/highland/include:$RT/highland/highlandPD/include:$ROOT_INCLUDE_PATH"
 set -e
 
 which lar || { echo "ERROR: lar not found"; exit 1; }
