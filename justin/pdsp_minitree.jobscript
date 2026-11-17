@@ -52,8 +52,9 @@ echo "Processing [$counter]: $input_url"
 # 2. Entorno DUNE (SL7: dunesw v09 necesita la imagen de SL7)
 unset prod_db
 set +eu
+echo "Sistema operativo: $(cat /etc/redhat-release 2>/dev/null || grep PRETTY_NAME /etc/os-release)"
 source /cvmfs/dune.opensciencegrid.org/products/dune/setup_dune.sh
-setup dunesw v09_56_00d00 -q e20:prof
+setup dunesw v09_56_00d00 -q e20:prof || { echo "ERROR: setup dunesw v09_56_00d00 falló (¿imagen sin SL7? submit.sh con IMAGE=...)"; exit 1; }
 
 # 3. HighLAND (el setup.sh de highland no carga sus productos porque ROOTSYS ya está definido)
 HL_SETUP="$RT/highland/highland/scripts/setup.sh"
