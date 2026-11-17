@@ -7,11 +7,13 @@
 // from cetpkgsupport v1_14_01.
 ////////////////////////////////////////////////////////////////////////
 
+#include <algorithm>
 #include <array>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
+#include <unordered_map>
 #include <cmath>
 #include "cetlib_except/exception.h"
 
@@ -128,7 +130,8 @@ public:
 
   //other functions/utilities
   void CheckPrimaryMatching(std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch);
-  void TrueRecoMatching    (art::Event const &evt, const recob::PFParticle* ls_part, 
+  void TrueRecoMatching    (art::Event const &evt, const recob::PFParticle* ls_part,
+			    const std::vector<art::Ptr<recob::Hit>>& ls_part_hits,
 			    AnaParticlePD* part, std::vector<AnaTrueParticleB*>& trueParticles);
 
   AnaParticlePD* GetRecoParticle        (AnaBunch* bunch, int ID);
@@ -169,9 +172,15 @@ private:
   std::unique_ptr<art::FindManyP<recob::SpacePoint>> fPFPSpacePoints;
   std::unique_ptr<art::FindManyP<recob::Hit>> fSpacePointHits;
   std::unique_ptr<art::FindManyP<recob::Wire>> fHitWires;
-  // MC truth of all the hits (SaveTrueHitCounts): dominant particle of each hit (index = key),
-  // hits per plane where each particle dominates and energy it deposits in the collection plane
+  // MC truth of all the hits, built in a single backtracking pass (MC only): dominant particle of
+  // each hit (index = key), hits per plane where each particle dominates and energy it deposits in the
+  // collection plane (saved with SaveTrueHitCounts). fHitTrackIDs (all the particles contributing to each
+  // hit) and fTrueNHitsAny (hits, all planes, with any contribution of each particle) give the purity and
+  // completeness without backtracking again (ProtoDUNETruthUtils::GetCompleteness backtracks all the hits
+  // of the event in every call)
   std::vector<int> fHitTrueID;
+  std::vector<std::vector<int>> fHitTrackIDs;
+  std::unordered_map<int,int> fTrueNHitsAny;
   std::map<int, std::array<int,3>> fTrueNHits;
   std::map<int, float> fTrueEDep;
   std::optional<detinfo::DetectorClocksData> fClockData;
@@ -211,7 +220,7 @@ private:
   bool        fSaveForcedTracks;     // track fit forced on PFParticles without track
   std::string fForcedTrackTag;
   std::string fForcedCalorimetryTag;
-  bool        fSaveTrueHitCounts;    // backtrack all the hits of the event (MC)
+  bool        fSaveTrueHitCounts;    // MC: save NHitsTrue and EDepTrue of the true particles (the hits are always backtracked)
   protoana::ProtoDUNEDataUtils fDataUtils;
   art::InputTag fRawDigitTag;          // the products ProtoDUNEDataUtils needs (from its configuration)
   art::InputTag fRawDigitTimeStampTag;
@@ -415,20 +424,28 @@ void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const
 
   //MC truth of all the hits, in a single pass
   fHitTrueID.clear();
+  fHitTrackIDs.clear();
+  fTrueNHitsAny.clear();
   fTrueNHits.clear();
   fTrueEDep.clear();
-  if(!evt.isRealData() && fSaveTrueHitCounts){
+  if(!evt.isRealData()){
     art::ServiceHandle<cheat::BackTrackerService> bt;
     fHitTrueID.assign(fAllHits.size(), -999);
+    fHitTrackIDs.assign(fAllHits.size(), std::vector<int>());
     for(const art::Ptr<recob::Hit>& h : fAllHits){
       const int plane = h->WireID().Plane;
       float emax = -1;
+      std::vector<int>& ids = fHitTrackIDs[h.key()];
       for(const sim::TrackIDE& ide : bt->HitToTrackIDEs(*fClockData, h)){
 	if(ide.energy > emax){
 	  emax = ide.energy;
 	  fHitTrueID[h.key()] = ide.trackID;
 	}
 	if(plane == 2)fTrueEDep[ide.trackID] += ide.energy;
+	if(std::find(ids.begin(), ids.end(), ide.trackID) == ids.end()){
+	  ids.push_back(ide.trackID);
+	  fTrueNHitsAny[ide.trackID]++;
+	}
       }
       if(emax >= 0 && plane >= 0 && plane < 3){
 	auto it = fTrueNHits.emplace(fHitTrueID[h.key()], std::array<int,3>{{0,0,0}}).first;
@@ -823,9 +840,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   part->isPandora  = isPandora;
   part->BeamOrigin = BeamOrigin;
 
-  //if mc try to match a truth particle (uses BeamOrigin)
-  if(!evt.isRealData())TrueRecoMatching(evt, ls_part, part, trueParticles);
-
   part->UniqueID = ls_part->Self();
   part->ParentID = ls_part->Parent();
   
@@ -834,6 +848,9 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   //get number of hits of the PFP regardless track or shower
   const std::vector<art::Ptr<recob::Hit>> ls_part_hits = pfpUtil.GetPFParticleHits_Ptrs(*ls_part, evt, fPFParticleTag);
   part->NHits = ls_part_hits.size();
+
+  //if mc try to match a truth particle (uses BeamOrigin)
+  if(!evt.isRealData())TrueRecoMatching(evt, ls_part, ls_part_hits, part, trueParticles);
 
   // Determine if the particle is track-like or shower-like
   const recob::Track*  track  = pfpUtil.GetPFParticleTrack(*ls_part,evt,fPFParticleTag,fTrackerTag);
@@ -1042,21 +1059,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillHitRawInfo(const art::Ptr<rec
   hit.CNN[1] = cnn_out[ fCNN->getIndex("em") ];
   hit.CNN[2] = cnn_out[ fCNN->getIndex("michel") ];
 
-  //true particle that deposits most energy in the hit (computed for all the hits in BuildEventCaches,
-  //or here if SaveTrueHitCounts is off)
-  if(!fHitTrueID.empty()){
-    if(ls_hit.key() < fHitTrueID.size())hit.TrueID = fHitTrueID[ls_hit.key()];
-  }
-  else if(fIsMC && fClockData){
-    art::ServiceHandle<cheat::BackTrackerService> bt;
-    float emax = -1;
-    for(const sim::TrackIDE& ide : bt->HitToTrackIDEs(*fClockData, ls_hit)){
-      if(ide.energy > emax){
-	emax = ide.energy;
-	hit.TrueID = ide.trackID;
-      }
-    }
-  }
+  //true particle that deposits most energy in the hit (MC: computed for all the hits in BuildEventCaches)
+  if(ls_hit.key() < fHitTrueID.size())hit.TrueID = fHitTrueID[ls_hit.key()];
 
   //waveform between the start and end ticks of the hit
   if(fHitWires && fHitWires->isValid()){
@@ -1415,8 +1419,9 @@ void highlandAnalysis::CreateHighlandMiniTree::CheckPrimaryMatching(std::vector<
 }
 
 //*****************************************************************************
-void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const &evt, const recob::PFParticle* ls_part, 
-							       AnaParticlePD* part, std::vector<AnaTrueParticleB*>& trueParticles){
+void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const &evt, const recob::PFParticle* ls_part,
+								const std::vector<art::Ptr<recob::Hit>>& ls_part_hits,
+								AnaParticlePD* part, std::vector<AnaTrueParticleB*>& trueParticles){
 //*****************************************************************************
 
   bool found = false;
@@ -1424,10 +1429,23 @@ void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const
   //get the true particle ID that generated this reco particle
   int truePartID = GetTrueParticleIDFromPFP(evt, ls_part);
 
-  //purity and completeness of the matching (not in summary mode: the completeness loops over all hits)
+  //purity and completeness of the matching, same definitions as ProtoDUNETruthUtils::GetPurity and
+  //GetCompleteness (hits with any contribution of the matched particle, without eve IDs), from the
+  //backtracking cache of BuildEventCaches (not in summary mode)
   if(fFillDetail){
-    part->TruePur = truthUtil.GetPurity(*fClockData, *ls_part, evt, fPFParticleTag);
-    part->TrueEff = truthUtil.GetCompleteness(*fClockData, *ls_part, evt, fPFParticleTag, fHitTag);
+    part->TruePur = 0;
+    part->TrueEff = 0;
+    auto itall = fTrueNHitsAny.find(truePartID);
+    if(truePartID != -1 && !ls_part_hits.empty() && itall != fTrueNHitsAny.end() && itall->second > 0){
+      int shared = 0;
+      for(const art::Ptr<recob::Hit>& h : ls_part_hits){
+	if(h.key() >= fHitTrackIDs.size())continue;
+	const std::vector<int>& ids = fHitTrackIDs[h.key()];
+	if(std::find(ids.begin(), ids.end(), truePartID) != ids.end())shared++;
+      }
+      part->TruePur = (double)shared / ls_part_hits.size();
+      part->TrueEff = (double)shared / itall->second;
+    }
   }
 
   //look for it in the TrueParticles vector

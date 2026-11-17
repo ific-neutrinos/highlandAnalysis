@@ -54,7 +54,7 @@ highlandAnalysis:
   SaveForcedTracks:       true   # track fit forced on the PFParticles without track (shower-like)
   ForcedTrackTag:         "pandora2Track"
   ForcedCalorimetryTag:   "pandora2cali"
-  SaveTrueHitCounts:      true   # MC: backtrack all the hits (TrueID, NHitsTrue, EDepTrue of the true particles)
+  SaveTrueHitCounts:      true   # MC: NHitsTrue and EDepTrue of the true particles (all the hits are always backtracked once: TrueID of the hits, purity, completeness)
 
   # data quality: what the FEMB and unstable HV filters check, saved instead of filtering (data only)
   DataUtils:              @local::standard_protodunedatautils
