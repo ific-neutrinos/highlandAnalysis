@@ -16,8 +16,9 @@
 # trabajo, para summarize.sh).
 #
 # Sin "set -e"/"set -u" antes de los setup: UPS, setup_dune.sh y los setup de HighLAND no
-# los toleran.
-set -x
+# los toleran. Sin "set -x": imprimía cada línea de los setup de UPS. Cada paso escribe una
+# línea "==> ..."; el log completo de lar queda en lar.log (en pantalla solo el final).
+step() { echo "==> [$(date +%H:%M:%S)] $*"; }
 
 NEVENTS=${NEVENTS:--1}
 case "${MODE:-}" in
@@ -47,21 +48,23 @@ if [[ -z "$input_url" ]]; then
     echo "$pfn" > justin-processed-pfns.txt
     exit 0
 fi
-echo "Processing [$counter]: $input_url"
+step "Fichero [$counter]: $input_url"
 
 # 2. Entorno DUNE (SL7: dunesw v09 necesita la imagen de SL7)
 unset prod_db
 set +eu
-echo "Sistema operativo: $(cat /etc/redhat-release 2>/dev/null || grep PRETTY_NAME /etc/os-release)"
-source /cvmfs/dune.opensciencegrid.org/products/dune/setup_dune.sh
+step "Sistema operativo: $(cat /etc/redhat-release 2>/dev/null || grep PRETTY_NAME /etc/os-release)"
+step "setup dunesw v09_56_00d00"
+source /cvmfs/dune.opensciencegrid.org/products/dune/setup_dune.sh > /dev/null
 setup dunesw v09_56_00d00 -q e20:prof || { echo "ERROR: setup dunesw v09_56_00d00 falló (¿imagen sin SL7? submit.sh con IMAGE=...)"; exit 1; }
 
 # 3. HighLAND (el setup.sh de highland no carga sus productos porque ROOTSYS ya está definido)
 HL_SETUP="$RT/highland/highland/scripts/setup.sh"
 HLPD_SETUP="$RT/highland/highlandPD/scripts/setup.sh"
 [[ -f "$HL_SETUP" && -f "$HLPD_SETUP" ]] || { echo "ERROR: faltan los setup de HighLAND en $RT"; exit 1; }
-source "$HL_SETUP"
-source "$HLPD_SETUP"
+step "setup highland y highlandPD"
+source "$HL_SETUP"   > /dev/null
+source "$HLPD_SETUP" > /dev/null
 
 # Librerías del área local (el módulo y lo que necesite de protoduneana local), por delante
 # de las de cvmfs. art busca los módulos en CET_PLUGIN_PATH.
@@ -75,8 +78,8 @@ export FHICL_FILE_PATH=".:$RT/fcl:$FHICL_FILE_PATH"
 export ROOT_INCLUDE_PATH="$RT/highland/highland/include:$RT/highland/highlandPD/include:$ROOT_INCLUDE_PATH"
 set -e
 
-which lar || { echo "ERROR: lar not found"; exit 1; }
-env | grep -i highland | grep -v -E '^(PATH|LD_LIBRARY_PATH|CMAKE_PREFIX_PATH|DYLD_LIBRARY_PATH|CET_PLUGIN_PATH)=' | sort
+command -v lar > /dev/null || { echo "ERROR: lar not found"; exit 1; }
+step "lar: $(command -v lar); HIGHLANDPATH=$HIGHLANDPATH; HIGHLANDPDPATH=$HIGHLANDPDPATH"
 
 # 4. Ficheros locales (la entrada se lee por xrootd, no se copia)
 FCL="CreateHighlandMiniTree_${MODE}.fcl"
@@ -95,12 +98,18 @@ fi
 TIME_CMD=()
 [[ -x /usr/bin/time ]] && TIME_CMD=(/usr/bin/time -v -o time.txt)
 set +e
+step "lar -c $FCL -n $NEVENTS"
 start=$(date +%s)
 "${TIME_CMD[@]}" "${LAR_CMD[@]}" > lar.log 2>&1
 lar_status=$?
 end=$(date +%s)
 set -e
-tail -200 lar.log
+step "lar ha terminado con estado $lar_status en $((end-start)) s"
+if [[ $lar_status -ne 0 ]]; then
+    tail -200 lar.log
+else
+    grep -E '^(TrigReport Events total|TimeReport CPU|MemReport  VmPeak)' lar.log
+fi
 
 input_name=$(basename "$input_url" .root | sed 's/[^A-Za-z0-9_.-]/_/g')
 output_file="minitree_${input_name}.root"
@@ -113,7 +122,7 @@ cpu_user=$(  [[ -f time.txt ]] && sed -n 's/.*User time (seconds): *//p' time.tx
 cpu_sys=$(   [[ -f time.txt ]] && sed -n 's/.*System time (seconds): *//p' time.txt )
 out_bytes=$( [[ -s "$OUT_DEFAULT" ]] && stat -c %s "$OUT_DEFAULT" || echo 0 )
 echo "mode=$MODE counter=$counter status=$lar_status events=${nev:-0} wall_s=$((end-start)) cpu_user_s=${cpu_user:-NA} cpu_sys_s=${cpu_sys:-NA} maxrss_kb=${maxrss_kb:-NA} out_bytes=$out_bytes host=$(hostname) rse=$rse input=$input_url" > "$stats_file"
-cat "$stats_file"
+step "Stats: $(cat "$stats_file")"
 
 if [[ $lar_status -ne 0 ]]; then
     echo "ERROR: lar failed ($lar_status)"
