@@ -68,7 +68,7 @@ outputs: {}
 physics.producers.pandoracali.CaloAlg.CalAreaConstants: [1.166e-3, 1.122e-3, 1.038e-3]
 physics.producers.pandora2cali.CaloAlg.CalAreaConstants: [1.166e-3, 1.122e-3, 1.038e-3]
 
-physics.analyzers.highlandana.Debug:               true
+physics.analyzers.highlandana.Debug:               false
 physics.analyzers.highlandana.CalorimetryTag:      "pandoracali"
 physics.analyzers.highlandana.CalorimetryTagNoSCE: "pandoracalonosce"
 physics.analyzers.highlandana.NominalBeamMom:      6.0

@@ -14,7 +14,11 @@
 #include <optional>
 #include <set>
 #include <unordered_map>
+#include <chrono>
 #include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
 #include "cetlib_except/exception.h"
 
 //basic includes
@@ -129,7 +133,8 @@ public:
   void FillCosmicsInfo     (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch);
 
   //other functions/utilities
-  void CheckPrimaryMatching(std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch);
+  int  CheckPrimaryMatching(std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch);
+  void PrintStep           (const std::string& step, const std::string& result) const;
   void TrueRecoMatching    (art::Event const &evt, const recob::PFParticle* ls_part,
 			    const std::vector<art::Ptr<recob::Hit>>& ls_part_hits,
 			    AnaParticlePD* part, std::vector<AnaTrueParticleB*>& trueParticles);
@@ -150,6 +155,8 @@ public:
   /// Start and end points of the saved beam-slice particles (reco coordinates)
   std::vector<geo::Point_t> GetBeamSliceEnds(AnaBunch* bunch);
   std::vector<geo::Point_t> fBeamSliceEnds; // computed once per event, in FillCosmicsInfo
+  int fNCosmics;          // cosmics saved in this event (FillCosmicsInfo)
+  int fNCosmicsDetailed;  // of them, with all the information
 
   /// Summed CNN output (track, em, michel, none) of the hits of a PFParticle in one plane, and number of hits
   std::pair<std::array<float,4>,int> GetCNNOutputFromPFParticleFromPlane(const art::Event &evt,
@@ -232,7 +239,8 @@ private:
 
   double      fNominalBeamMom;
 
-  bool        fDebug;
+  bool        fVerbose;  // flow of each event: one line per step
+  bool        fDebug;    // details of each particle
 
   // per-event state
   bool fFullDump;              // this event is dumped completely (FullDumpPrescale)
@@ -296,7 +304,8 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
 
   fNominalBeamMom(p.get<double>("NominalBeamMom")), 
 
-  fDebug(p.get<bool>("Debug")),
+  fVerbose(p.get<bool>("Verbose", true)),
+  fDebug(p.get<bool>("Debug", false)),
   fFullDump(false),
   fFillDetail(true),
   fBeamPrimary(NULL),
@@ -330,8 +339,33 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
 void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
 //*****************************************************************************
 
+  //flow of the event (Verbose): a header, one line per step with what was found and its time, and a footer
+  using clock = std::chrono::steady_clock;
+  const clock::time_point tEvent = clock::now();
+  clock::time_point tStep = tEvent;
+  auto elapsed = [&tStep](){
+    const clock::time_point now = clock::now();
+    const double dt = std::chrono::duration<double>(now - tStep).count();
+    tStep = now;
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(2) << " [" << dt << " s]";
+    return os.str();
+  };
+  auto str = [](auto... args){ std::ostringstream os; (os << ... << args); return os.str(); };
+  const std::string line(90, '=');
+  const std::string thin(90, '-');
+
+  if(fVerbose){
+    std::cout << line << std::endl;
+    std::cout << " Event " << evt.id().event() << "  (run " << evt.run() << ", subrun " << evt.subRun()
+	      << ", " << (evt.isRealData() ? "data" : "MC") << ", nominal momentum " << fNominalBeamMom
+	      << " GeV, #" << fNEvents+1 << " in this job)" << std::endl;
+    std::cout << thin << std::endl;
+  }
+
   //per-event caches and state
   BuildEventCaches(evt);
+  PrintStep("Event caches", str(fAllHits.size(), " hits", (evt.isRealData() ? "" : ", all backtracked")) + elapsed());
 
   //create a spill for each event and fill event info
   //(owned here, so that it is deleted also in the early returns)
@@ -352,7 +386,7 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   AnaDataQualityPD* dq = static_cast<AnaDataQualityPD*>(spill->DataQuality);
   FillDQInfo(evt, dq);
   const bool goodDaq = dq->GoodDaq;
-  if(!goodDaq)mf::LogVerbatim("CreateHighlandMiniTree") << "Beam quality check failed, event saved as bad DAQ";
+  PrintStep("Data quality", std::string(goodDaq ? "good" : "bad beamline trigger: saved as bad DAQ, without bunch") + elapsed());
 
   //beam related information, for all events. Each event counts as one spill: highland's
   //CreateMiniTree adds the spills that it does not save to the next saved one
@@ -362,15 +396,23 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   beam->SpillsSincePreviousSavedSpill = 1;
   beam->POTSincePreviousSavedSpill    = 0;
   FillBeamInfo(evt, beam);
+  if(beam->nTracks < 0)PrintStep("Beam instrumentation", "no beam event" + elapsed());
+  else PrintStep("Beam instrumentation", str(beam->nTracks, " track(s), ", beam->nMomenta, " momentum(s)",
+					     (beam->nMomenta > 0 ? str(", p = ", beam->BeamMomentum, " GeV") : std::string(""))) + elapsed());
 
   if(goodDaq){
     //true info
     if(info.IsMC){
       FillBeamTrueInfo(evt,spill);
-      if(spill->TrueParticles.empty())
-	mf::LogVerbatim("CreateHighlandMiniTree") << "No true beam particle found";
+      if(fBeamPrimary)PrintStep("Beam truth", str("PDG ", fBeamPrimary->PdgCode(), ", p = ", fBeamPrimary->P(), " GeV, ",
+						  spill->TrueParticles.size(), " true particles in its chain") + elapsed());
+      else PrintStep("Beam truth", "no true beam particle found" + elapsed());
       //all true cosmics, if desired (CosmicsTruthMode 1 only saves those matched to reco objects)
-      if(fCosmicsTruthMode == 2)FillCosmicsTrueInfo(evt, spill->TrueParticles);
+      if(fCosmicsTruthMode == 2){
+	const size_t n0 = spill->TrueParticles.size();
+	FillCosmicsTrueInfo(evt, spill->TrueParticles);
+	PrintStep("Cosmics truth", str(spill->TrueParticles.size()-n0, " true particles") + elapsed());
+      }
     }
 
     //MC: the beam instrumentation information comes from the true beam particle
@@ -381,26 +423,53 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
     spill->Bunches.push_back(bunch);
     FillBunchInfo(evt, spill->TrueParticles, bunch, spill);
     info.HasPandora = !bunch->Particles.empty();
-    if(!info.HasPandora)mf::LogVerbatim("CreateHighlandMiniTree") << "No beam slice, event saved without beam particles";
 
     //check if primary particle is beam particle (MC only)
-    if(info.IsMC && fBeamPrimary)CheckPrimaryMatching(spill->TrueParticles, bunch);
+    int matched = -1;
+    if(info.IsMC && fBeamPrimary)matched = CheckPrimaryMatching(spill->TrueParticles, bunch);
+    const size_t nPFP = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag)->size();
+    if(!info.HasPandora)PrintStep("Beam slice", str("not found (", nPFP, " PFParticles): saved without beam particles") + elapsed());
+    else PrintStep("Beam slice", str(bunch->Particles.size(), " particles (of ", nPFP, " PFParticles)",
+				     (matched == 1 ? ", primary matched to the true beam particle" :
+				      matched == 0 ? ", primary NOT matched to the true beam particle" : "")) + elapsed());
 
     //hits without PFParticle near the ends of the beam slice (needs the beam slice)
-    if((fSaveUnassociatedHits || fFullDump) && info.HasPandora)FillUnassociatedHits(evt, bunch);
+    if((fSaveUnassociatedHits || fFullDump) && info.HasPandora){
+      FillUnassociatedHits(evt, bunch);
+      PrintStep("Unassociated hits", str(bunch->UnassociatedHits.size(), " near the beam slice") + elapsed());
+    }
 
     //cosmics
-    if(fCosmicsMode > 0 || fFullDump)FillCosmicsInfo(evt, spill->TrueParticles, bunch);
+    if(fCosmicsMode > 0 || fFullDump){
+      FillCosmicsInfo(evt, spill->TrueParticles, bunch);
+      PrintStep("Cosmics", str(fNCosmics, " saved, ", fNCosmicsDetailed, " complete (CosmicsMode ",
+			       (fFullDump ? 4 : fCosmicsMode), (fFullDump ? ", full dump" : ""), ")") + elapsed());
+    }
   }
 
   //hits and deposited energy of each saved true particle
-  if(info.IsMC && fSaveTrueHitCounts)FillTrueHitCounts(spill->TrueParticles);
+  if(info.IsMC && fSaveTrueHitCounts){
+    FillTrueHitCounts(spill->TrueParticles);
+    PrintStep("True hit counts", str(spill->TrueParticles.size(), " true particles") + elapsed());
+  }
 
   //clone the new spill (RedoLinks), fill the tree and delete the clone
   fspill = spill->Clone();
   fTree->Fill();
   delete fspill;
   fspill = NULL;
+  PrintStep("Tree", "filled" + elapsed());
+
+  if(fVerbose){
+    size_t nParts = 0;
+    for(const AnaBunchB* b : spill->Bunches)nParts += b->Particles.size();
+    std::cout << thin << std::endl;
+    std::cout << " End of event " << evt.id().event() << ": " << nParts << " reco particles, "
+	      << spill->TrueParticles.size() << " true particles, "
+	      << std::fixed << std::setprecision(2) << std::chrono::duration<double>(clock::now() - tEvent).count()
+	      << " s" << std::defaultfloat << std::endl;
+    std::cout << line << std::endl << std::endl;
+  }
 }
 
 //*****************************************************************************
@@ -457,6 +526,8 @@ void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const
   //per-event state
   fBeamPrimary = NULL;
   fBeamSliceEnds.clear();
+  fNCosmics = 0;
+  fNCosmicsDetailed = 0;
   fIsMC = !evt.isRealData();
   fFillDetail = true;
   fFullDump = fFullDumpPrescale > 0 && fNEvents % fFullDumpPrescale == 0;
@@ -475,18 +546,11 @@ void highlandAnalysis::CreateHighlandMiniTree::FillEventInfo(art::Event const &e
   info->NominalBeamMom = fNominalBeamMom;
   info->EmptyEvent = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag)->empty();
   info->HasPandora = false; //set to true in analyze() if there is a beam slice
-
-  if(fDebug){
-    std::cout << "Run " << info->Run << ", event " << info->Event << ", MC = " << info->IsMC;
-    std::cout << ", Beam Mom = " << info->NominalBeamMom << std::endl;
-  }
 }
 
 //*****************************************************************************
 void highlandAnalysis::CreateHighlandMiniTree::FillDQInfo(art::Event const &evt, AnaDataQualityPD* dq){
 //*****************************************************************************
-
-  if(fDebug)std::cout << "Filling data quality info" << std::endl;
 
   //associate trigger quality to data quality. Only for data, MC is always good.
   if(evt.isRealData())dq->GoodDaq = fBeamlineUtils.IsGoodBeamlineTrigger(evt);
@@ -600,23 +664,12 @@ void highlandAnalysis::CreateHighlandMiniTree::FillForcedTrack(art::Event const 
 void highlandAnalysis::CreateHighlandMiniTree::FillBeamTrueInfo(art::Event const &evt, AnaSpill* spill){
 //*****************************************************************************
   
-  if(fDebug)std::cout << "Filling truth beam info" << std::endl;
-
   //get the truth particles
   auto mcTruths = evt.getValidHandle<std::vector<simb::MCTruth>>(fGeneratorTag);
 
-  if(fDebug){
-    std::cout << "there is a primary truth particle" << std::endl;
-    std::cout << "and " << (*mcTruths)[0].NParticles()-1 << " truth background particles in this event" << std::endl;
-  }
-
   //get true primary particle
   const simb::MCParticle* ls_truePrimaryPart = truthUtil.GetGeantGoodParticle((*mcTruths)[0],evt);
-  if(!ls_truePrimaryPart){
-    mf::LogVerbatim("CreateHighlandMiniTree") << "True primary particle not found" << std::endl;
-    return;
-  }
-  if(fDebug)std::cout << "true primary particle found" << std::endl;
+  if(!ls_truePrimaryPart)return;
 
   //fill true particle info recursively
   const sim::ParticleList &pList = piServ->ParticleList();
@@ -718,8 +771,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
 void highlandAnalysis::CreateHighlandMiniTree::FillBeamInfo(art::Event const &evt, AnaBeamPD* beam){
 //*****************************************************************************
 
-  if(fDebug)std::cout << "Filling beam info" << std::endl;
-
   //get vector of beam events, but use just the first one
   //some criteria is needed if more than 1 beam event is found
   std::string beamtag;
@@ -729,10 +780,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBeamInfo(art::Event const &ev
   std::vector<art::Ptr<beam::ProtoDUNEBeamEvent>> beamVec;
   if(evt.getByLabel(beamtag, beamHandle))art::fill_ptr_vector(beamVec, beamHandle);
 
-  if(beamVec.empty()){
-    mf::LogVerbatim("CreateHighlandMiniTree") << "No beam event found";
-    return;
-  }
+  if(beamVec.empty())return; //nTracks stays unassigned
 
   const beam::ProtoDUNEBeamEvent & beamEvent = *(beamVec.at(0)); //Should just have one
 
@@ -779,7 +827,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBeamInfo(art::Event const &ev
     beam->BeamParticle->DirectionEnd[2]   = beamEvent.GetBeamTracks()[0].Trajectory().EndDirection().Z();
   }
 
-  if(fDebug)std::cout << "beam information retrieved. Event has " << beam->nTracks << " tracks" << std::endl;
 } 
 
 //*****************************************************************************
@@ -788,8 +835,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
 							     AnaBunch* bunch, AnaSpillPD* spill){
 //*****************************************************************************
   
-  if(fDebug)std::cout << "Filling bunch info" << std::endl;
-
   //basic bunch info (there's only one bunch in PD)
   bunch->Bunch  = 1;
   bunch->Weight = 1;
@@ -798,12 +843,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
   std::vector<const recob::PFParticle*> primaryParticles = pfpUtil.GetPFParticlesFromBeamSlice(evt,fPFParticleTag);
   auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
 
-  if(fDebug)std::cout << "there are " << (*pfpHandle).size() << " PFP particles in this event" << std::endl;
-
-  if(primaryParticles.size() == 0){
-    if(fDebug)std::cout << "No beam slice found" << std::endl;
-    return;
-  }
+  if(primaryParticles.size() == 0)return;
 
   //get the primary particle
   const recob::PFParticle* ls_primaryPart = primaryParticles.at(0);
@@ -816,7 +856,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBunchInfo(art::Event const &e
   bool BeamOrigin = true;
   bool isPandora  = true;
   
-  if(fDebug)std::cout << "Filling particle info recursively" << std::endl;
   FillParticleInfo(evt, pfpHandle, ls_primaryPart, trueParticles, bunch, generation, BeamOrigin, isPandora);
 }
 
@@ -1175,7 +1214,6 @@ std::vector<geo::Point_t> highlandAnalysis::CreateHighlandMiniTree::GetBeamSlice
 void highlandAnalysis::CreateHighlandMiniTree::FillUnassociatedHits(art::Event const &evt, AnaBunchPD* bunch){
 //*****************************************************************************
 
-  if(fDebug)std::cout << "filling unassociated hits" << std::endl;
 
   bunch->UnassociatedHits.clear();
 
@@ -1227,7 +1265,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillUnassociatedHits(art::Event c
     bunch->UnassociatedHits.push_back(hit);
   }
 
-  if(fDebug)std::cout << bunch->UnassociatedHits.size() << " unassociated hits saved" << std::endl;
 }
 
 //*****************************************************************************
@@ -1258,7 +1295,6 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsTrueInfo(art::Event co
 								   std::vector<AnaTrueParticleB*>& trueParticles){
 //*****************************************************************************
 
-  if(fDebug)std::cout << "filling cosmics true info" << std::endl;
   
   //Geant4 primaries of cosmic origin, in a single pass over the particle list
   //(before: one pass over the whole list per CORSIKA particle, matching by energy)
@@ -1281,12 +1317,10 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsInfo(art::Event const 
 							       AnaBunch* bunch){
 //*****************************************************************************
 
-  if(fDebug)std::cout << "filling cosmics info" << std::endl;
   fBeamSliceEnds = GetBeamSliceEnds(bunch);
   
   //get vector of pfp particles
   auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
-  if(fDebug)std::cout << "there are " << (*pfpHandle).size() << " PFP particles in this event" << std::endl;
 
   int cosmics = 0; 
   int detailed = 0;
@@ -1315,7 +1349,8 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsInfo(art::Event const 
     FillParticleInfo(evt, pfpHandle, &ls_part, trueParticles, bunch, -1, false);
   }
   fFillDetail = true;
-  if(fDebug)std::cout << cosmics << " interesting cosmics added to the particles vector, " << detailed << " with all the information" << std::endl;
+  fNCosmics         = cosmics;
+  fNCosmicsDetailed = detailed;
 }
 
 //*****************************************************************************
@@ -1397,25 +1432,32 @@ bool highlandAnalysis::CreateHighlandMiniTree::IsInterestingCosmic(art::Event co
 }
 
 //*****************************************************************************
-void highlandAnalysis::CreateHighlandMiniTree::CheckPrimaryMatching(std::vector<AnaTrueParticleB*>& trueParticles, 
-								    AnaBunch* bunch){
+int highlandAnalysis::CreateHighlandMiniTree::CheckPrimaryMatching(std::vector<AnaTrueParticleB*>& trueParticles,
+								   AnaBunch* bunch){
 //*****************************************************************************
 
-  //sanity check
-  if(trueParticles.size() == 0 || bunch->Particles.size() == 0)return;
+  //1 matched, 0 mismatched, -1 not checked
+  if(trueParticles.size() == 0 || bunch->Particles.size() == 0)return -1;
 
   AnaTrueParticlePD* tp1 = static_cast<AnaTrueParticlePD*>(trueParticles.at(0));
   AnaTrueParticlePD* tp2 = static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject);
   if(tp1 && tp2){
     if(tp1->ID == tp2->ID){
       static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = true;
-      if(fDebug)std::cout << "Primary particle in TPC and beam particle matched" << std::endl;
+      return 1;
     }
-    else {
-      static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = false;
-      if(fDebug)std::cout << "Primary part missmatched" << std::endl;
-    }
+    static_cast<AnaTrueParticlePD*>(bunch->Particles.at(0)->TrueObject)->Matched = false;
+    return 0;
   }
+  return -1;
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::PrintStep(const std::string& step, const std::string& result) const{
+//*****************************************************************************
+
+  if(!fVerbose)return;
+  std::cout << "  -- " << std::left << std::setw(20) << step << " " << result << std::right << std::endl;
 }
 
 //*****************************************************************************
@@ -1451,7 +1493,6 @@ void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const
   //look for it in the TrueParticles vector
   for(int itrue = 0; itrue < (int)trueParticles.size(); itrue++){
     if(truePartID == trueParticles.at(itrue)->ID){
-      //if(fDebug)std::cout << "matching true particle found" << std::endl;
       part->TrueObject = trueParticles.at(itrue);
       found = true;
       break;
@@ -1461,7 +1502,7 @@ void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const
   //if not found among stored true particles, look for it on the pList
   //(not for cosmics with CosmicsTruthMode 0)
   if(!found && truePartID != -1 && (part->BeamOrigin || fCosmicsTruthMode > 0)){
-    if(fDebug)std::cout << "matching true particle not found among previously stored trueparticles," << std::endl;
+    if(fDebug)std::cout << "     PFParticle " << ls_part->Self() << ": true particle " << truePartID << " not stored yet, adding it" << std::endl;
     const sim::ParticleList &pList = piServ->ParticleList();
     auto it = pList.find(truePartID);
     if(it != pList.end() && it->second){
@@ -1471,7 +1512,7 @@ void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const
     }
   }
   
-  if(!found)if(fDebug)std::cout << "matching true particle not found anywhere" << std::endl;
+  if(!found && fDebug)std::cout << "     PFParticle " << ls_part->Self() << ": no matching true particle (ID " << truePartID << ")" << std::endl;
 }
 
 //*****************************************************************************

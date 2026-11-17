@@ -61,7 +61,8 @@ highlandAnalysis:
   UnstableHVTimeRanges:   @local::HVfilter.TimeRanges
   FullDumpPrescale:       0      # complete dump in 1 of every N events (0 = never)
 
-  Debug:                false
+  Verbose:              true   # flow of each event: one line per step, with what was found and its time
+  Debug:                false  # details of each particle (true matching, ...)
 }
 
 END_PROLOG
