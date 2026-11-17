@@ -501,7 +501,7 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
 
   if(fVerbose){
     size_t nParts = 0;
-    for(const AnaBunchB* b : spill->Bunches)nParts += b->Particles.size();
+    for(AnaBunchC* b : spill->Bunches)nParts += static_cast<AnaBunch*>(b)->Particles.size();
     std::cout << thin << std::endl;
     std::cout << " End of event " << evt.id().event() << ": " << nParts << " reco particles, "
 	      << spill->TrueParticles.size() << " true particles, "
