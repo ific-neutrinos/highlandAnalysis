@@ -266,6 +266,7 @@ private:
   bool        fSaveHitSignal;
   bool        fSaveForcedTracks;     // track fit forced on PFParticles without track
   std::string fForcedTrackTag;
+  bool        fSaveForcedTrackHits;  // also the hits and trajectory points of the forced track (otherwise only the summary)
   std::string fForcedCalorimetryTag;
   bool        fSaveTrueHitCounts;    // MC: save NHitsTrue and EDepTrue of the true particles (the hits are always backtracked)
   protoana::ProtoDUNEDataUtils fDataUtils;
@@ -332,6 +333,7 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fSaveHitSignal(p.get<bool>("SaveHitSignal", false)),
   fSaveForcedTracks(p.get<bool>("SaveForcedTracks", true)),
   fForcedTrackTag(p.get<std::string>("ForcedTrackTag", "pandora2Track")),
+  fSaveForcedTrackHits(p.get<bool>("SaveForcedTrackHits", false)),
   fForcedCalorimetryTag(p.get<std::string>("ForcedCalorimetryTag", "pandora2cali")),
   fSaveTrueHitCounts(p.get<bool>("SaveTrueHitCounts", true)),
   fDataUtils(p.get<fhicl::ParameterSet>("DataUtils")),
@@ -675,22 +677,33 @@ void highlandAnalysis::CreateHighlandMiniTree::FillForcedTrack(art::Event const 
   ft.DirectionEnd[0]   = dirE.X();  ft.DirectionEnd[1]   = dirE.Y();  ft.DirectionEnd[2]   = dirE.Z();
   ft.Length = track->Length();
 
-  for(size_t i = 0; i < track->NumberTrajectoryPoints(); i++){
-    AnaTrajectoryPointPD tjp;
-    auto pos = track->LocationAtPoint(i);
-    auto dir = track->DirectionAtPoint(i);
-    tjp.Position_NoSCE.SetXYZ(pos.X(),pos.Y(),pos.Z());
-    tjp.Direction_NoSCE.SetXYZ(dir.X(),dir.Y(),dir.Z());
-    if(tjp.IsValid())ft.TrjPoints.push_back(tjp);
+  //trajectory points and hits only with SaveForcedTrackHits: the PFParticles without track are mostly
+  //showers, with many hits that are already in HitsNoCalo (only the calorimetry would be new)
+  if(fSaveForcedTrackHits){
+    for(size_t i = 0; i < track->NumberTrajectoryPoints(); i++){
+      AnaTrajectoryPointPD tjp;
+      auto pos = track->LocationAtPoint(i);
+      auto dir = track->DirectionAtPoint(i);
+      tjp.Position_NoSCE.SetXYZ(pos.X(),pos.Y(),pos.Z());
+      tjp.Direction_NoSCE.SetXYZ(dir.X(),dir.Y(),dir.Z());
+      if(tjp.IsValid())ft.TrjPoints.push_back(tjp);
+    }
   }
 
-  //calorimetry (with SCE corrections, as Hits of the tracks)
+  //calorimetry (with SCE corrections, as Hits of the tracks). The chi2 is always computed with the
+  //collection plane, even if the hits are not saved
   std::vector<double> dEdx, ResRange;
   for(const anab::Calorimetry& cal : GetRecoTrackCalorimetry(evt, *track, fForcedTrackTag, fForcedCalorimetryTag)){
     const int plane = cal.PlaneID().Plane;
     if(plane < 0 || plane > 2)continue;
+    if(!fSaveForcedTrackHits && plane != 2)continue;
     if(plane != 2 && !fSaveHitsAllPlanes)continue;
     for(size_t ihit = 0; ihit < cal.dQdx().size(); ihit++){
+      if(!fSaveForcedTrackHits){
+	dEdx.push_back(cal.dEdx().at(ihit));
+	ResRange.push_back(cal.ResidualRange().at(ihit));
+	continue;
+      }
       AnaHitPD hit;
       hit.dQdx          = cal.dQdx().at(ihit);
       hit.dEdx          = cal.dEdx().at(ihit);
