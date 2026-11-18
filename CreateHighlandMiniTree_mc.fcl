@@ -1,6 +1,7 @@
 #include "CreateHighlandMiniTree.fcl"
 #include "services_dune.fcl"
 #include "protoDUNE_reco_mc_prolog.fcl"
+#include "missingproductfilter.fcl"
 #include "protodune_tools_dune.fcl"
 
 process_name: highlandAna
@@ -46,7 +47,15 @@ physics:
    @table::protoDUNE_reco_mc_stage2_producers
  }
 
- reco: [ @sequence::protoDUNE_reco_mc_stage2 ]
+ # skip the stage 2 recalibration in events whose reco1/reco2 lacks the Pandora products
+ # (it throws ProductNotFound and lar aborts: run 5770, event 124878, without pandoraTrack). A
+ # filter that rejects an event stops the rest of the path; the analyzer, in another path, still
+ # sees the event and saves it marked (HasPandora = false, EmptyEvent = true)
+ filters: {
+   fmissing: @local::standard_missingproductfilter
+ }
+
+ reco: [ fmissing, @sequence::protoDUNE_reco_mc_stage2 ]
 
 
  analyzers:
@@ -62,6 +71,9 @@ physics:
 
 physics.analyzers.highlandana.CalorimetryTag:       "pandoracali"
 physics.analyzers.highlandana.CalorimetryTagNoSCE:  "pandoracalonosce"
+# products the filter checks (the ones the stage 2 and the analyzer need; reco3d is not used)
+physics.filters.fmissing.Modules: ["pandora", "pandoraTrack", "pandoraShower"]
+
 physics.analyzers.highlandana.Debug: 		    false
 physics.analyzers.highlandana.NominalBeamMom:	    6.0
 

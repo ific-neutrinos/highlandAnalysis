@@ -111,7 +111,8 @@ public:
 
   // ----------------------------
 
-  void BuildEventCaches    (art::Event const &evt);
+  std::string MissingRecoProducts(art::Event const &evt) const;
+  void BuildEventCaches    (art::Event const &evt, bool recoComplete);
   void FillEventInfo       (art::Event const &evt, AnaEventInfoPD* info);
   void FillDQInfo          (art::Event const &evt, AnaDataQualityPD* dq);
   void FillForcedTrack     (art::Event const &evt, const recob::PFParticle* ls_part, AnaParticlePD* part);
@@ -408,9 +409,15 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
     std::cout << thin << std::endl;
   }
 
+  //some reco1/reco2 events lack the Pandora products (run 5770, event 124878, without pandoraTrack).
+  //The fcl skips the stage 2 for them (MissingProductFilter) and here they are saved marked
+  const std::string missing = MissingRecoProducts(evt);
+  const bool recoComplete = missing.empty();
+
   //per-event caches and state
-  BuildEventCaches(evt);
-  PrintStep("Event caches", str(fAllHits.size(), " hits", (evt.isRealData() ? "" : ", all backtracked")) + elapsed());
+  BuildEventCaches(evt, recoComplete);
+  if(recoComplete)PrintStep("Event caches", str(fAllHits.size(), " hits", (evt.isRealData() ? "" : ", all backtracked")) + elapsed());
+  else PrintStep("Event caches", "missing reco products: " + missing + elapsed());
 
   //create a spill for each event and fill event info
   //(owned here, so that it is deleted also in the early returns)
@@ -425,6 +432,8 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   //    do not see them: highland creates the events from the bunches)
   //  - no true beam particle (MC): TrueParticles without the beam particle
   //  - no beam slice: EventInfo->HasPandora = false, a bunch without beam-slice particles
+  //  - missing Pandora products: as without beam slice, also EmptyEvent = true, without
+  //    cosmics, unassociated hits nor true hit counts
 
   //data quality and check
   spill->DataQuality = MakeDataQuality();
@@ -466,15 +475,21 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
     //Fill each bunch info (we have only one in PD)
     AnaBunchPD* bunch = MakeBunch();
     spill->Bunches.push_back(bunch);
-    FillBunchInfo(evt, spill->TrueParticles, bunch, spill);
+    if(recoComplete)FillBunchInfo(evt, spill->TrueParticles, bunch, spill);
+    else{
+      bunch->Bunch  = 1;
+      bunch->Weight = 1;
+    }
     info.HasPandora = !bunch->Particles.empty();
 
     //check if primary particle is beam particle (MC only)
     int matched = -1;
     if(info.IsMC && fBeamPrimary)matched = CheckPrimaryMatching(spill->TrueParticles, bunch);
-    const size_t nPFP = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag)->size();
-    if(!info.HasPandora)PrintStep("Beam slice", str("not found (", nPFP, " PFParticles): saved without beam particles") + elapsed());
-    else PrintStep("Beam slice", str(bunch->Particles.size(), " particles (of ", nPFP, " PFParticles)",
+    if(!recoComplete)PrintStep("Beam slice", "missing reco products (" + missing + "): saved without beam particles" + elapsed());
+    else if(!info.HasPandora)PrintStep("Beam slice", str("not found (", evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag)->size(),
+							 " PFParticles): saved without beam particles") + elapsed());
+    else PrintStep("Beam slice", str(bunch->Particles.size(), " particles (of ",
+				     evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag)->size(), " PFParticles)",
 				     (matched == 1 ? ", primary matched to the true beam particle" :
 				      matched == 0 ? ", primary NOT matched to the true beam particle" : "")) + elapsed());
 
@@ -486,7 +501,7 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
 
     //cosmics, only in the events with beam slice (the others are not analysed: they only count
     //for the normalization and, in MC, the efficiency, with EventInfo, Beam and the truth)
-    const bool cosmics = (fCosmicsMode > 0 && (info.HasPandora || fCosmicsWithoutBeamSlice)) || fFullDump;
+    const bool cosmics = recoComplete && ((fCosmicsMode > 0 && (info.HasPandora || fCosmicsWithoutBeamSlice)) || fFullDump);
     if(!cosmics && fCosmicsMode > 0)PrintStep("Cosmics", "not saved: no beam slice" + elapsed());
     if(cosmics){
       FillCosmicsInfo(evt, spill->TrueParticles, bunch);
@@ -495,8 +510,8 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
     }
   }
 
-  //hits and deposited energy of each saved true particle
-  if(info.IsMC && fSaveTrueHitCounts){
+  //hits and deposited energy of each saved true particle (needs the backtracked hits)
+  if(info.IsMC && fSaveTrueHitCounts && recoComplete){
     FillTrueHitCounts(spill->TrueParticles);
     PrintStep("True hit counts", str(spill->TrueParticles.size(), " true particles") + elapsed());
   }
@@ -521,20 +536,42 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
 }
 
 //*****************************************************************************
-void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const &evt){
+std::string highlandAnalysis::CreateHighlandMiniTree::MissingRecoProducts(art::Event const &evt) const{
 //*****************************************************************************
 
-  //products and associations used many times per event
-  auto hitHandle = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
+  //reco products the module reads with getValidHandle (comma-separated list of the missing ones)
+  std::string missing;
+  auto add = [&missing](const std::string& what){ missing += (missing.empty() ? "" : ", ") + what; };
+  if(!evt.getHandle<std::vector<recob::Hit>>(fHitTag))               add(fHitTag);
+  if(!evt.getHandle<std::vector<recob::PFParticle>>(fPFParticleTag)) add(fPFParticleTag + " (PFParticles)");
+  if(!evt.getHandle<std::vector<recob::SpacePoint>>(fPFParticleTag)) add(fPFParticleTag + " (space points)");
+  if(!evt.getHandle<std::vector<recob::Track>>(fTrackerTag))         add(fTrackerTag);
+  if(!evt.getHandle<std::vector<recob::Shower>>(fShowerTag))         add(fShowerTag);
+  return missing;
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const &evt, bool recoComplete){
+//*****************************************************************************
+
+  //products and associations used many times per event (none if reco products are missing:
+  //then the event is saved without reco objects)
   fAllHits.clear();
-  art::fill_ptr_vector(fAllHits, hitHandle);
-  auto trackHandle = evt.getValidHandle<std::vector<recob::Track>>(fTrackerTag);
-  fTrackHitMeta = std::make_unique<art::FindManyP<recob::Hit, recob::TrackHitMeta>>(trackHandle,evt,fTrackerTag);
-  fCNN = std::make_unique<anab::MVAReader<recob::Hit,4>>(evt, "emtrkmichelid:emtrkmichel");
-  auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
-  fPFPSpacePoints = std::make_unique<art::FindManyP<recob::SpacePoint>>(pfpHandle, evt, fPFParticleTag);
-  auto spHandle = evt.getValidHandle<std::vector<recob::SpacePoint>>(fPFParticleTag);
-  fSpacePointHits = std::make_unique<art::FindManyP<recob::Hit>>(spHandle, evt, fPFParticleTag);
+  fTrackHitMeta.reset();
+  fCNN.reset();
+  fPFPSpacePoints.reset();
+  fSpacePointHits.reset();
+  if(recoComplete){
+    auto hitHandle = evt.getValidHandle<std::vector<recob::Hit>>(fHitTag);
+    art::fill_ptr_vector(fAllHits, hitHandle);
+    auto trackHandle = evt.getValidHandle<std::vector<recob::Track>>(fTrackerTag);
+    fTrackHitMeta = std::make_unique<art::FindManyP<recob::Hit, recob::TrackHitMeta>>(trackHandle,evt,fTrackerTag);
+    fCNN = std::make_unique<anab::MVAReader<recob::Hit,4>>(evt, "emtrkmichelid:emtrkmichel");
+    auto pfpHandle = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
+    fPFPSpacePoints = std::make_unique<art::FindManyP<recob::SpacePoint>>(pfpHandle, evt, fPFParticleTag);
+    auto spHandle = evt.getValidHandle<std::vector<recob::SpacePoint>>(fPFParticleTag);
+    fSpacePointHits = std::make_unique<art::FindManyP<recob::Hit>>(spHandle, evt, fPFParticleTag);
+  }
   fHitWires.reset();
   fPFPClusters.reset();
   fClusterHits.reset();
@@ -549,7 +586,8 @@ void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const
   fPFPT0Failed = false;
   fTrackCalo.clear();
   fTrackCaloFailed.clear();
-  if(fSaveHitSignal)fHitWires = std::make_unique<art::FindManyP<recob::Wire>>(hitHandle, evt, fHitTag);
+  if(fSaveHitSignal && recoComplete)
+    fHitWires = std::make_unique<art::FindManyP<recob::Wire>>(evt.getValidHandle<std::vector<recob::Hit>>(fHitTag), evt, fHitTag);
   fClockData.emplace(art::ServiceHandle<detinfo::DetectorClocksService const>()->DataFor(evt));
 
   //MC truth of all the hits, in a single pass
@@ -605,7 +643,9 @@ void highlandAnalysis::CreateHighlandMiniTree::FillEventInfo(art::Event const &e
   info->IsMC      = !evt.isRealData();
   info->EventTime = evt.time().timeHigh();
   info->NominalBeamMom = fNominalBeamMom;
-  info->EmptyEvent = evt.getValidHandle<std::vector<recob::PFParticle>>(fPFParticleTag)->empty();
+  //also true when the PFParticles are missing (MissingRecoProducts)
+  auto pfpHandle = evt.getHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
+  info->EmptyEvent = !pfpHandle || pfpHandle->empty();
   info->HasPandora = false; //set to true in analyze() if there is a beam slice
 }
 
