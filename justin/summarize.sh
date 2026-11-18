@@ -30,11 +30,19 @@ END {
 }'
 
 if [[ -n "$LIST" ]]; then
-    missing=0
+    # Con VERBOSE=1 lista siempre los que faltan; si no, solo cuando son pocos (en una prueba
+    # con N trabajos faltan casi todos los de la lista y no interesa verlos)
+    missing=()
     while read -r url; do
         [[ -z "$url" || "$url" == \#* ]] && continue
         name=$(basename "$url" .root | sed 's/[^A-Za-z0-9_.-]/_/g')
-        [[ -f "$DIR/stats_${name}.txt" ]] || { echo "SIN STATS: $url"; missing=$((missing+1)); }
+        [[ -f "$DIR/stats_${name}.txt" ]] || missing+=("$url")
     done < "$LIST"
-    echo "Ficheros de la lista sin stats: $missing"
+    nmiss=${#missing[@]}
+    if [[ $nmiss -le 10 || -n "${VERBOSE:-}" ]]; then
+        for url in "${missing[@]}"; do echo "SIN STATS: $url"; done
+        echo "Ficheros de la lista sin stats: $nmiss"
+    else
+        echo "Ficheros de la lista sin stats: $nmiss (VERBOSE=1 para listarlos)"
+    fi
 fi
