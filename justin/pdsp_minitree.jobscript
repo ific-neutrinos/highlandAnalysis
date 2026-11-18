@@ -2,34 +2,44 @@
 # justIN jobscript: ProtoDUNE-SP (dunesw v09_56_00d00) + CreateHighlandMiniTree -> minitree.
 #
 # Se lanza con --monte-carlo N (datos y MC igual, aunque parte del MC esté en MetaCat): cada
-# trabajo recibe un contador k y procesa la línea k de una lista de URLs xrootd que va en el
-# tarball (hecha con make_filelist.sh desde SAM, con prestage).
+# trabajo recibe un contador k y procesa FILES_PER_JOB líneas consecutivas de una lista de URLs
+# xrootd que va en el tarball (hecha con make_filelist.sh desde SAM, con prestage): las líneas
+# (k-1)*F+1 ... k*F, sin contar comentarios ni líneas vacías. N = ceil(ficheros/F).
 #
 # Variables (--env):
-#   MODE      mc | data                          (obligatoria)
-#   LIST      lista dentro de pdsp_runtime/lists (por defecto filelist_${MODE}.txt)
-#   NEVENTS   eventos por fichero                (por defecto -1, todos)
-#   DEBUG_GDB 1: corre lar bajo gdb y sale
+#   MODE           mc | data                          (obligatoria)
+#   LIST           lista dentro de pdsp_runtime/lists (por defecto filelist_${MODE}.txt)
+#   FILES_PER_JOB  ficheros por trabajo               (por defecto 1)
+#   NEVENTS        eventos por fichero                (por defecto -1, todos)
+#   DEBUG_GDB      1: corre lar bajo gdb (primer fichero del trabajo) y sale
 #   INPUT_TAR_DIR_LOCAL: directorio del tarball en cvmfs (justin-cvmfs-upload)
 #
-# Salidas: minitree_<entrada>.root y stats_<entrada>.txt (una línea clave=valor por
-# trabajo, para summarize.sh).
+# Salidas: por cada fichero de entrada, minitree_<entrada>.root (si lar acaba bien) y
+# stats_<entrada>.txt (siempre, también si lar falla: una línea clave=valor para summarize.sh).
+#
+# Estado de salida: 0 si al menos un fichero sale bien. Los que fallan se quedan sin minitree y
+# con status != 0 en sus stats (summarize.sh los lista y RETRY_LIST=... los escribe en una lista
+# para relanzarlos con LIST=...); justIN no los reintenta. Si fallan todos, 1: justIN reintenta
+# el contador (problema del nodo, del setup o de la lectura).
 #
 # Sin "set -e"/"set -u" antes de los setup: UPS, setup_dune.sh y los setup de HighLAND no
 # los toleran. Sin "set -x": imprimía cada línea de los setup de UPS. Cada paso escribe una
-# línea "==> ..."; el log completo de lar queda en lar.log (en pantalla solo el final).
+# línea "==> ..."; el log completo de lar queda en lar_<i>.log (en pantalla solo el final).
 step() { echo "==> [$(date +%H:%M:%S)] $*"; }
+tree_pids() { local p; for p in $(pgrep -P "$1"); do echo "$p"; tree_pids "$p"; done; }   # descendientes
 
 NEVENTS=${NEVENTS:--1}
+FILES_PER_JOB=${FILES_PER_JOB:-1}
 case "${MODE:-}" in
     mc|data) ;;
     *) echo "ERROR: MODE tiene que ser mc o data (--env MODE=...)"; exit 1 ;;
 esac
+[[ "$FILES_PER_JOB" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: FILES_PER_JOB=$FILES_PER_JOB no es un entero positivo"; exit 1; }
 
 RT="$INPUT_TAR_DIR_LOCAL/pdsp_runtime"
 LIST="$RT/lists/${LIST:-filelist_${MODE}.txt}"
 
-# 1. Contador de justIN -> línea de la lista
+# 1. Contador de justIN -> líneas de la lista
 did_pfn_rse=$("$JUSTIN_PATH/justin-get-file")
 if [[ -z "$did_pfn_rse" ]]; then
     echo "No files available"
@@ -42,13 +52,16 @@ echo "justIN DID: $did  PFN: $pfn"
 [[ -f "$LIST" ]] || { echo "ERROR: no existe la lista $LIST"; exit 1; }
 counter=$(echo "$did" | grep -o '[0-9]\+' | tail -1)
 counter=$((10#${counter:-0}))
-input_url=$(grep -v -e '^#' -e '^[[:space:]]*$' "$LIST" | sed -n "${counter}p")
-if [[ -z "$input_url" ]]; then
-    echo "Contador $counter fuera de la lista ($(grep -c -v -e '^#' -e '^[[:space:]]*$' "$LIST") ficheros): nada que hacer"
+first=$(( (counter-1)*FILES_PER_JOB + 1 ))
+last=$((  counter*FILES_PER_JOB ))
+mapfile -t inputs < <(grep -v -e '^#' -e '^[[:space:]]*$' "$LIST" | sed -n "${first},${last}p")
+if [[ ${#inputs[@]} -eq 0 ]]; then
+    echo "Contador $counter (líneas $first-$last) fuera de la lista ($(grep -c -v -e '^#' -e '^[[:space:]]*$' "$LIST") ficheros): nada que hacer"
     echo "$pfn" > justin-processed-pfns.txt
     exit 0
 fi
-step "Fichero [$counter]: $input_url"
+step "Contador $counter: líneas $first-$last de $(basename "$LIST") (${#inputs[@]} ficheros)"
+for u in "${inputs[@]}"; do echo "    $u"; done
 
 # 2. Entorno DUNE (SL7: dunesw v09 necesita la imagen de SL7)
 unset prod_db
@@ -87,54 +100,80 @@ OUT_DEFAULT="minitree_${MODE}.root"   # fileName del TFileService en el fcl
 cp "$RT/fcl/"CreateHighlandMiniTree*.fcl . || { echo "ERROR: fcl copy failed"; exit 1; }
 cp "$RT/data/dEdxrestemplates.root" .     || { echo "ERROR: data copy failed"; exit 1; }
 
-# 5. lar
-LAR_CMD=(lar -c "$FCL" -s "$input_url" -n "$NEVENTS")
-if [[ -n "${DEBUG_GDB:-}" ]]; then
-    set +e
-    gdb -batch -ex "catch throw logic_error" -ex run -ex "bt 15" --args "${LAR_CMD[@]}" 2>&1 | tail -80
-    exit 1
-fi
-
 TIME_CMD=()
 [[ -x /usr/bin/time ]] && TIME_CMD=(/usr/bin/time -v -o time.txt)
+
+# 5. lar, un fichero tras otro
 set +e
-step "lar -c $FCL -n $NEVENTS"
-start=$(date +%s)
-"${TIME_CMD[@]}" "${LAR_CMD[@]}" > lar.log 2>&1
-lar_status=$?
-end=$(date +%s)
-set -e
-step "lar ha terminado con estado $lar_status en $((end-start)) s"
-if [[ $lar_status -ne 0 ]]; then
-    tail -200 lar.log
-else
-    grep -E '^(TrigReport Events total|TimeReport CPU|MemReport  VmPeak)' lar.log
-fi
+nok=0
+nfail=0
+for i in "${!inputs[@]}"; do
+    input_url=${inputs[$i]}
+    line=$((first + i))
+    log="lar_${i}.log"
+    rm -f "$OUT_DEFAULT" time.txt
+    LAR_CMD=(lar -c "$FCL" -s "$input_url" -n "$NEVENTS")
+    if [[ -n "${DEBUG_GDB:-}" ]]; then
+        gdb -batch -ex "catch throw logic_error" -ex run -ex "bt 15" --args "${LAR_CMD[@]}" 2>&1 | tail -80
+        exit 1
+    fi
 
-input_name=$(basename "$input_url" .root | sed 's/[^A-Za-z0-9_.-]/_/g')
-output_file="minitree_${input_name}.root"
-stats_file="stats_${input_name}.txt"
+    step "[$((i+1))/${#inputs[@]}] línea $line: lar -c $FCL -n $NEVENTS -s $input_url"
+    start=$(date +%s)
+    "${TIME_CMD[@]}" "${LAR_CMD[@]}" > "$log" 2>&1 &
+    runpid=$!
+    # Memoria residente máxima de lar (VmHWM de /proc, que solo crece; el máximo de todos los
+    # procesos que cuelgan de runpid, cada 5 s): GNU time 1.7 da valores imposibles en algunos
+    # sitios (hasta 25 GB con lar en ~2 GB; workflows 23322 y 23323)
+    hwm_kb=0
+    while kill -0 "$runpid" 2> /dev/null; do
+        for p in "$runpid" $(tree_pids "$runpid"); do
+            v=$(awk '/^VmHWM:/{print $2}' "/proc/$p/status" 2> /dev/null)
+            [[ -n "$v" && "$v" -gt "$hwm_kb" ]] && hwm_kb=$v
+        done
+        sleep 5
+    done
+    wait "$runpid"
+    lar_status=$?
+    end=$(date +%s)
+    step "lar ha terminado con estado $lar_status en $((end-start)) s"
+    if [[ $lar_status -ne 0 ]]; then
+        tail -200 "$log"
+    else
+        grep -E '^(TrigReport Events total|TimeReport CPU|MemReport  VmPeak)' "$log"
+    fi
 
-# 6. Estadísticas (se escriben también si lar falla, para contarlo en el resumen)
-nev=$(grep -m1 'TrigReport Events total' lar.log | sed -n 's/.*total = *\([0-9]*\).*/\1/p')
-maxrss_kb=$( [[ -f time.txt ]] && sed -n 's/.*Maximum resident set size (kbytes): *//p' time.txt )
-cpu_user=$(  [[ -f time.txt ]] && sed -n 's/.*User time (seconds): *//p' time.txt )
-cpu_sys=$(   [[ -f time.txt ]] && sed -n 's/.*System time (seconds): *//p' time.txt )
-out_bytes=$( [[ -s "$OUT_DEFAULT" ]] && stat -c %s "$OUT_DEFAULT" || echo 0 )
-echo "mode=$MODE counter=$counter status=$lar_status events=${nev:-0} wall_s=$((end-start)) cpu_user_s=${cpu_user:-NA} cpu_sys_s=${cpu_sys:-NA} maxrss_kb=${maxrss_kb:-NA} out_bytes=$out_bytes host=$(hostname) rse=$rse input=$input_url" > "$stats_file"
-step "Stats: $(cat "$stats_file")"
+    input_name=$(basename "$input_url" .root | sed 's/[^A-Za-z0-9_.-]/_/g')
+    output_file="minitree_${input_name}.root"
+    stats_file="stats_${input_name}.txt"
 
-if [[ $lar_status -ne 0 ]]; then
-    echo "ERROR: lar failed ($lar_status)"
+    # Estadísticas (también si lar falla, para contarlo en el resumen)
+    nev=$(grep -m1 'TrigReport Events total' "$log" | sed -n 's/.*total = *\([0-9]*\).*/\1/p')
+    maxrss_kb=$( [[ -f time.txt ]] && sed -n 's/.*Maximum resident set size (kbytes): *//p' time.txt )
+    cpu_user=$(  [[ -f time.txt ]] && sed -n 's/.*User time (seconds): *//p' time.txt )
+    cpu_sys=$(   [[ -f time.txt ]] && sed -n 's/.*System time (seconds): *//p' time.txt )
+    out_bytes=$( [[ -s "$OUT_DEFAULT" ]] && stat -c %s "$OUT_DEFAULT" || echo 0 )
+    [[ $lar_status -eq 0 && $out_bytes -eq 0 ]] && lar_status=-1   # lar bien pero sin salida
+    echo "mode=$MODE counter=$counter line=$line status=$lar_status events=${nev:-0} wall_s=$((end-start)) cpu_user_s=${cpu_user:-NA} cpu_sys_s=${cpu_sys:-NA} maxrss_kb=${maxrss_kb:-NA} vmhwm_kb=$hwm_kb out_bytes=$out_bytes host=$(hostname) rse=$rse input=$input_url" > "$stats_file"
+    step "Stats: $(cat "$stats_file")"
+
+    if [[ $lar_status -eq 0 ]]; then
+        mv "$OUT_DEFAULT" "$output_file"
+        nok=$((nok+1))
+        echo "Successfully produced $output_file"
+    else
+        # sin minitree: un fichero a medias no se sube
+        rm -f "$OUT_DEFAULT"
+        nfail=$((nfail+1))
+        echo "ERROR: lar failed ($lar_status) para $input_url"
+    fi
+done
+
+# 6. Resultado del trabajo
+step "Ficheros bien: $nok, con fallo: $nfail"
+if [[ $nok -eq 0 ]]; then
+    echo "ERROR: no ha salido bien ningún fichero"
     exit 1
 fi
-if [[ ! -s "$OUT_DEFAULT" ]]; then
-    echo "ERROR: $OUT_DEFAULT was not produced"
-    exit 1
-fi
-mv "$OUT_DEFAULT" "$output_file"
-
-# 7. Marcar el contador como procesado
 echo "$pfn" > justin-processed-pfns.txt
-echo "Successfully produced $output_file"
 exit 0
