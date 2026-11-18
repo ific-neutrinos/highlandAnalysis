@@ -6,7 +6,9 @@
 # justIN escribe en /pnfs/dune/scratch/users/$USER/fnal/<workflow>/<stage>/<lote>/: el destino
 # es .../users/$USER y "fnal/<workflow>/<stage>" lo añade él (workflows 23119 y 23295); al acabar, collect.sh <workflow> la mueve a pdsp/<mode>/<AAAAMMDD>/ (fecha de
 # lanzamiento). Este script apunta "<workflow> <mode> <fecha>" en workflows.txt.
-# Variables opcionales: IMAGE (--image, hace falta SL7 para dunesw v09), RSS_MIB,
+# Variables opcionales: IMAGE (--image, hace falta SL7 para dunesw v09), SITES (sitios de justIN
+# separados por comas, un --site por cada uno: los ficheros se leen por xrootd desde FNAL y lejos
+# de allí la lectura domina el tiempo; workflow 23322), RSS_MIB,
 # WALL_SECONDS, DRYRUN=1 (solo imprime el comando).
 set -eu
 [[ $# -lt 3 ]] && { sed -n '2,11p' "$0"; exit 1; }
@@ -32,6 +34,10 @@ CMD=(justin simple-workflow
      --output-pattern "stats_*.txt:$DEST"
      --workflow-id-file "$WFFILE")
 [[ -n "${IMAGE:-}" ]] && CMD+=(--image "$IMAGE")
+if [[ -n "${SITES:-}" ]]; then
+    IFS=',' read -r -a site_list <<< "$SITES"
+    for s in "${site_list[@]}"; do CMD+=(--site "$s"); done
+fi
 
 printf '%q ' "${CMD[@]}"; echo
 [[ -n "${DRYRUN:-}" ]] && { rm -f "$WFFILE"; exit 0; }
