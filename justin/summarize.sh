@@ -40,7 +40,8 @@ if [[ -n "$LIST" ]]; then
     done < "$LIST"
     nmiss=${#missing[@]}
     if [[ $nmiss -le 10 || -n "${VERBOSE:-}" ]]; then
-        for url in "${missing[@]}"; do echo "SIN STATS: $url"; done
+        # ${a[@]+...}: con set -u, bash 4.2 (SL7) da "unbound variable" al expandir un array vacío
+        for url in ${missing[@]+"${missing[@]}"}; do echo "SIN STATS: $url"; done
         echo "Ficheros de la lista sin stats: $nmiss"
     else
         echo "Ficheros de la lista sin stats: $nmiss (VERBOSE=1 para listarlos)"
