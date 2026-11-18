@@ -8,10 +8,11 @@
 # lanzamiento). Este script apunta "<workflow> <mode> <fecha>" en workflows.txt.
 # Variables opcionales: IMAGE (--image, hace falta SL7 para dunesw v09), SITES (sitios de justIN
 # separados por comas, un --site por cada uno: los ficheros se leen por xrootd desde FNAL y lejos
-# de allí la lectura domina el tiempo; workflow 23322), RSS_MIB,
+# de allí la lectura domina el tiempo; workflow 23322), LIST (lista dentro de pdsp_runtime/lists;
+# por defecto filelist_<mode>.txt), RSS_MIB,
 # WALL_SECONDS, DRYRUN=1 (solo imprime el comando).
 set -eu
-[[ $# -lt 3 ]] && { sed -n '2,11p' "$0"; exit 1; }
+[[ $# -lt 3 ]] && { sed -n '2,12p' "$0"; exit 1; }
 MODE=$1; N=$2; TARDIR=$3; NEV=${4:--1}
 [[ "$MODE" == mc || "$MODE" == data ]] || { echo "ERROR: mode tiene que ser mc o data"; exit 1; }
 
@@ -33,6 +34,7 @@ CMD=(justin simple-workflow
      --output-pattern "minitree_*.root:$DEST"
      --output-pattern "stats_*.txt:$DEST"
      --workflow-id-file "$WFFILE")
+[[ -n "${LIST:-}" ]] && CMD+=(--env LIST="$LIST")
 [[ -n "${IMAGE:-}" ]] && CMD+=(--image "$IMAGE")
 if [[ -n "${SITES:-}" ]]; then
     IFS=',' read -r -a site_list <<< "$SITES"
