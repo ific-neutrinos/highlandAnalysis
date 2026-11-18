@@ -69,6 +69,10 @@ physics:
 
 }
 
+# kaon efficiency study (large MC sample, 2026-11): all the PFParticles complete in the events with a
+# secondary K+ in the beam chain (~12 % of the events), to see where the K+ and their mu+ end up.
+# Biased by the truth (EventInfo.FullDump): remove for the production samples
+physics.analyzers.highlandana.FullDumpTruePDGs:     [321]
 physics.analyzers.highlandana.CalorimetryTag:       "pandoracali"
 physics.analyzers.highlandana.CalorimetryTagNoSCE:  "pandoracalonosce"
 # products the filter checks (the ones the stage 2 and the analyzer need; reco3d is not used)

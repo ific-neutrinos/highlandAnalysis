@@ -275,6 +275,7 @@ private:
   art::InputTag fRawDigitTimeStampTag;
   std::vector<std::pair<UInt_t,UInt_t>> fUnstableHVTimeRanges; // same list as the unstable HV filter
   int         fFullDumpPrescale; // complete dump in 1 of every N events (0 = never)
+  std::set<int> fFullDumpTruePDGs; // MC: complete dump of the events with any of these PDGs in the beam chain (not the beam particle)
   int         fCompressionSettings; // of the output file: 100*algorithm + level (208 LZMA 8, 505 ZSTD 5, 101 zlib 1)
   
   int         fMaxGeneration;
@@ -286,7 +287,8 @@ private:
   bool        fDebug;    // details of each particle
 
   // per-event state
-  bool fFullDump;              // this event is dumped completely (FullDumpPrescale)
+  bool fFullDump;              // this event is dumped completely (FullDumpPrescale or FullDumpTruePDGs)
+  bool fFullDumpPrescaled;     // ... because of FullDumpPrescale: then also all the unassociated hits
   bool fFillDetail;            // fill hits, trajectory points and space points of the particle being filled
   const simb::MCParticle* fBeamPrimary; // true beam particle (its trajectory is always saved)
   bool fIsMC;
@@ -353,6 +355,7 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fVerbose(p.get<bool>("Verbose", true)),
   fDebug(p.get<bool>("Debug", false)),
   fFullDump(false),
+  fFullDumpPrescaled(false),
   fFillDetail(true),
   fBeamPrimary(NULL),
   fIsMC(false),
@@ -366,6 +369,9 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
     if(norm <= 0)throw cet::exception("CreateHighlandMiniTree") << "BeamVolumeDirection{Data,MC} cannot be zero";
     for(double& d : dir)d /= norm;
   }
+
+  std::vector<int> dumpPDGs = p.get<std::vector<int>>("FullDumpTruePDGs", {});
+  fFullDumpTruePDGs.insert(dumpPDGs.begin(), dumpPDGs.end());
 
   std::vector<int> trajPDGs = p.get<std::vector<int>>("TrueTrajPDGs", {321,-321});
   fTrueTrajPDGs.insert(trajPDGs.begin(), trajPDGs.end());
@@ -461,6 +467,16 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
       if(fBeamPrimary)PrintStep("Beam truth", str("PDG ", fBeamPrimary->PdgCode(), ", p = ", fBeamPrimary->P(), " GeV, ",
 						  spill->TrueParticles.size(), " true particles in its chain") + elapsed());
       else PrintStep("Beam truth", "no true beam particle found" + elapsed());
+      //complete dump of the events with the chosen PDGs in the beam chain (efficiency studies). Here
+      //TrueParticles is only the beam chain: the cosmics truth comes after
+      if(!fFullDump && !fFullDumpTruePDGs.empty() && fBeamPrimary){
+	for(AnaTrueParticleB* t : spill->TrueParticles){
+	  if(t->ID == fBeamPrimary->TrackId() || !fFullDumpTruePDGs.count(t->PDG))continue;
+	  fFullDump = true;
+	  PrintStep("Full dump", str("true PDG ", t->PDG, " in the beam chain (FullDumpTruePDGs)"));
+	  break;
+	}
+      }
       //all true cosmics, if desired (CosmicsTruthMode 1 only saves those matched to reco objects)
       if(fCosmicsTruthMode == 2){
 	const size_t n0 = spill->TrueParticles.size();
@@ -494,7 +510,7 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
 				      matched == 0 ? ", primary NOT matched to the true beam particle" : "")) + elapsed());
 
     //hits without PFParticle near the ends of the beam slice (needs the beam slice)
-    if((fSaveUnassociatedHits || fFullDump) && info.HasPandora){
+    if((fSaveUnassociatedHits || fFullDumpPrescaled) && info.HasPandora){
       FillUnassociatedHits(evt, bunch);
       PrintStep("Unassociated hits", str(bunch->UnassociatedHits.size(), " near the beam slice") + elapsed());
     }
@@ -515,6 +531,8 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
     FillTrueHitCounts(spill->TrueParticles);
     PrintStep("True hit counts", str(spill->TrueParticles.size(), " true particles") + elapsed());
   }
+
+  info.FullDump = fFullDump;
 
   //clone the new spill (RedoLinks), fill the tree and delete the clone
   fspill = spill->Clone();
@@ -630,6 +648,7 @@ void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const
   fIsMC = !evt.isRealData();
   fFillDetail = true;
   fFullDump = fFullDumpPrescale > 0 && fNEvents % fFullDumpPrescale == 0;
+  fFullDumpPrescaled = fFullDump;
   fNEvents++;
 }
 
@@ -1369,7 +1388,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillUnassociatedHits(art::Event c
     }
     const double pitch = geom->WirePitch(planeID);
     const double xhit  = detProp.ConvertTicksToX(ls_hit->PeakTime(), planeID);
-    bool near = fFullDump;
+    bool near = fFullDumpPrescaled;
     for(size_t i = 0; i < ends.size() && !near; i++){
       const double dw = (ls_hit->WireID().Wire - iw->second[i])*pitch;
       const double dx = xhit - ends[i].X();
