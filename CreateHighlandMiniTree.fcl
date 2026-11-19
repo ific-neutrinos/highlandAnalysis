@@ -45,6 +45,16 @@ highlandAnalysis:
   CosmicsMode:            2
   CosmicsRadius:          50.    # cm, distance to the ends of all the beam-slice particles (CosmicsMode >= 2)
   CosmicsWithoutBeamSlice: false # also in events without beam slice (they are not analysed; only EventInfo, Beam, DQ and truth are needed)
+  # mu candidates (mu+ of K+ decaying at rest), from CosmicsMode 2: complete the hierarchies with a track
+  # of mu range momentum 180-300 MeV/c that stops and has an end near the beam axis (it does not need
+  # the beam slice). Chosen with the 6 GeV MC (2026-11-19): of the mu of K+ outside the beam slice that
+  # CosmicsMode 2 leaves in summary, recovers 101 of 288 for +5.5 complete PFParticles per event
+  MuCandidates:           true
+  MuCandidatesWithoutBeamSlice: true # in events without beam slice, save those hierarchies (only them, complete)
+  MuCandidateLength:      [31.76, 82.00] # cm, mu range (pdAnaUtils::ComputeRangeMomentum) of 180 and 300 MeV/c
+  MuCandidateAxisRadius:  150.   # cm, distance of an end to the beam axis (BeamVolumeStart/Direction/Length)
+  MuCandidateStopMargin:  10.    # cm, an end at least this far from the faces of the active volume
+  ActiveVolume:           [-360., 360., 0., 607.5, 0., 695.] # cm, TPC active volume (no SCE)
   # beam axis, different for data and MC. Start: mean of the 6 GeV beam quality cuts of highlandPD
   # (pdUtils.parameters.dat). Direction: nominal value, to be measured in data and MC
   BeamVolumeStartData:     [-28.6, 424.6, 0.96]  # cm
@@ -70,6 +80,7 @@ highlandAnalysis:
   FullDumpPrescale:       0      # complete dump in 1 of every N events (0 = never)
   FullDumpTruePDGs:       []     # MC: complete dump of the events with any of these true PDGs in the beam chain (not the
                                  # beam particle itself), also without beam slice. For efficiency studies: biased by the truth
+                                 # (AnaParticlePD::CosmicCriteria tells what a normal event would have saved complete)
   CompressionSettings:    208    # output file: 100*algorithm + level (208 LZMA 8: the smallest; 505 ZSTD 5; 101 zlib 1)
 
   Verbose:              true   # flow of each event: one line per step, with what was found and its time

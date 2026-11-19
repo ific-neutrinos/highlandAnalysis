@@ -137,7 +137,9 @@ public:
   void FillTrueTrajectory  (const simb::MCParticle* ls_truePart, AnaTrueParticlePD* truePart);
   void FillShowerInfo      (const recob::Shower* shower, AnaParticlePD* part);
   void FillCosmicsTrueInfo (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles);
-  void FillCosmicsInfo     (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch);
+  /// onlyMuCandidates: events without beam slice, save only the hierarchies with a mu candidate (complete)
+  void FillCosmicsInfo     (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch,
+			    bool onlyMuCandidates = false);
 
   //other functions/utilities
   int  CheckPrimaryMatching(std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch);
@@ -172,6 +174,13 @@ public:
   bool IsNearBeamSlice(const std::vector<art::Ptr<recob::SpacePoint>>& sps);
   /// Is any of the space points inside the beam volume (cylinder around the nominal beam axis)?
   bool IsInBeamVolume(const std::vector<art::Ptr<recob::SpacePoint>>& sps);
+  /// Has the hierarchy a candidate to the mu of a K+ decaying at rest? A track with length in
+  /// MuCandidateLength that stops (an end inside the active volume, MuCandidateStopMargin from its
+  /// faces) and has an end closer than MuCandidateAxisRadius to the nominal beam axis. It does not
+  /// depend on the beam slice
+  bool HasMuCandidate(art::Event const &evt, const std::vector<recob::PFParticle>& pfps, const recob::PFParticle& ls_part);
+  /// Distance (cm) from a point to the nominal beam axis (segment of BeamVolumeLength from BeamVolumeStart)
+  double DistanceToBeamAxis(const geo::Point_t& x) const;
 
   /// Start and end points of the saved beam-slice particles (reco coordinates)
   std::vector<geo::Point_t> GetBeamSliceEnds(AnaBunch* bunch);
@@ -255,6 +264,12 @@ private:
   int         fCosmicsMode;      // 0 none, 1 summary, 2 complete near the beam slice, 3 also in the beam volume, 4 complete
   double      fCosmicsRadius;    // cm, for CosmicsMode >= 2
   bool        fCosmicsWithoutBeamSlice; // also save cosmics in events without beam slice (not analysed)
+  bool        fMuCandidates;     // complete the hierarchies with a mu candidate (HasMuCandidate), for CosmicsMode >= 2
+  bool        fMuCandidatesWithoutBeamSlice; // in events without beam slice, save those hierarchies (only them)
+  std::vector<double> fMuCandidateLength;  // cm, [min, max]
+  double      fMuCandidateAxisRadius;      // cm
+  double      fMuCandidateStopMargin;      // cm
+  std::vector<double> fActiveVolume;       // cm, [xmin, xmax, ymin, ymax, zmin, zmax]
   // beam axis, different for data and MC: point at the TPC entrance (cm) and direction
   // (normalized in the constructor). Index 0 data, 1 MC
   std::vector<double> fBeamVolumeStart[2];
@@ -297,6 +312,7 @@ private:
   bool fFullDump;              // this event is dumped completely (FullDumpPrescale or FullDumpTruePDGs)
   bool fFullDumpPrescaled;     // ... because of FullDumpPrescale: then also all the unassociated hits
   bool fFillDetail;            // fill hits, trajectory points and space points of the particle being filled
+  int  fCosmicCriteria;        // AnaParticlePD::CosmicCriteria of the cosmic hierarchy being filled (-999 otherwise)
   const simb::MCParticle* fBeamPrimary; // true beam particle (its trajectory is always saved)
   bool fIsMC;
   int fNEvents;
@@ -334,6 +350,12 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fCosmicsMode(p.get<int>("CosmicsMode", p.get<bool>("Cosmics", false) ? 4 : 0)),
   fCosmicsRadius(p.get<double>("CosmicsRadius", 50.)),
   fCosmicsWithoutBeamSlice(p.get<bool>("CosmicsWithoutBeamSlice", false)),
+  fMuCandidates(p.get<bool>("MuCandidates", false)),
+  fMuCandidatesWithoutBeamSlice(p.get<bool>("MuCandidatesWithoutBeamSlice", false)),
+  fMuCandidateLength(p.get<std::vector<double>>("MuCandidateLength", {31.76, 82.00})),
+  fMuCandidateAxisRadius(p.get<double>("MuCandidateAxisRadius", 150.)),
+  fMuCandidateStopMargin(p.get<double>("MuCandidateStopMargin", 10.)),
+  fActiveVolume(p.get<std::vector<double>>("ActiveVolume", {-360., 360., 0., 607.5, 0., 695.})),
   fBeamVolumeStart{p.get<std::vector<double>>("BeamVolumeStartData"), p.get<std::vector<double>>("BeamVolumeStartMC")},
   fBeamVolumeDirection{p.get<std::vector<double>>("BeamVolumeDirectionData"), p.get<std::vector<double>>("BeamVolumeDirectionMC")},
   fBeamVolumeRadius(p.get<double>("BeamVolumeRadius", 50.)),
@@ -371,6 +393,7 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fFullDump(false),
   fFullDumpPrescaled(false),
   fFillDetail(true),
+  fCosmicCriteria(-999),
   fBeamPrimary(NULL),
   fIsMC(false),
   fNEvents(0){
@@ -387,6 +410,11 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   for(int k = 0; k < 2; k++)
     if(fEmptyMin[k].size() != 3 || fEmptyMax[k].size() != 3)
       throw cet::exception("CreateHighlandMiniTree") << "EmptyEventFinder: the {Min,Max}CoordValues{Data,Sim} must have 3 components";
+
+  if(fMuCandidateLength.size() != 2)
+    throw cet::exception("CreateHighlandMiniTree") << "MuCandidateLength must be [min, max]";
+  if(fActiveVolume.size() != 6)
+    throw cet::exception("CreateHighlandMiniTree") << "ActiveVolume must be [xmin, xmax, ymin, ymax, zmin, zmax]";
 
   std::vector<int> dumpPDGs = p.get<std::vector<int>>("FullDumpTruePDGs", {});
   fFullDumpTruePDGs.insert(dumpPDGs.begin(), dumpPDGs.end());
@@ -537,14 +565,21 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
     }
 
     //cosmics, only in the events with beam slice (the others are not analysed: they only count
-    //for the normalization and, in MC, the efficiency, with EventInfo, Beam and the truth)
+    //for the normalization and, in MC, the efficiency, with EventInfo, Beam and the truth). In the
+    //events without beam slice, optionally only the hierarchies with a mu candidate: the mu of a
+    //K+ tags it without the beam slice
     const bool cosmics = recoComplete && ((fCosmicsMode > 0 && (info.HasPandora || fCosmicsWithoutBeamSlice)) || fFullDump);
-    if(!cosmics && fCosmicsMode > 0)PrintStep("Cosmics", "not saved: no beam slice" + elapsed());
+    const bool muCandidatesOnly = !cosmics && recoComplete && !info.HasPandora && fMuCandidates && fMuCandidatesWithoutBeamSlice;
     if(cosmics){
       FillCosmicsInfo(evt, spill->TrueParticles, bunch);
       PrintStep("Cosmics", str(fNCosmics, " saved, ", fNCosmicsDetailed, " complete (CosmicsMode ",
 			       (fFullDump ? 4 : fCosmicsMode), (fFullDump ? ", full dump" : ""), ")") + elapsed());
     }
+    else if(muCandidatesOnly){
+      FillCosmicsInfo(evt, spill->TrueParticles, bunch, true);
+      PrintStep("Cosmics", str("no beam slice: ", fNCosmics, " hierarchies with a mu candidate saved complete") + elapsed());
+    }
+    else if(fCosmicsMode > 0)PrintStep("Cosmics", "not saved: no beam slice" + elapsed());
   }
 
   //hits and deposited energy of each saved true particle (needs the backtracked hits)
@@ -668,6 +703,7 @@ void highlandAnalysis::CreateHighlandMiniTree::BuildEventCaches(art::Event const
   fNCosmicsDetailed = 0;
   fIsMC = !evt.isRealData();
   fFillDetail = true;
+  fCosmicCriteria = -999;
   fFullDump = fFullDumpPrescale > 0 && fNEvents % fFullDumpPrescale == 0;
   fFullDumpPrescaled = fFullDump;
   fNEvents++;
@@ -1064,6 +1100,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillParticleInfo(art::Event const
   //fill PFP basic info
   part->isPandora  = isPandora;
   part->BeamOrigin = BeamOrigin;
+  part->CosmicCriteria = BeamOrigin ? -999 : fCosmicCriteria;
 
   part->UniqueID = ls_part->Self();
   part->ParentID = ls_part->Parent();
@@ -1504,7 +1541,7 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsTrueInfo(art::Event co
 //*****************************************************************************
 void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsInfo(art::Event const &evt,
 							       std::vector<AnaTrueParticleB*>& trueParticles,
-							       AnaBunch* bunch){
+							       AnaBunch* bunch, bool onlyMuCandidates){
 //*****************************************************************************
 
   fBeamSliceEnds = GetBeamSliceEnds(bunch);
@@ -1520,25 +1557,39 @@ void highlandAnalysis::CreateHighlandMiniTree::FillCosmicsInfo(art::Event const 
   //  2 complete if near the beam slice (CosmicsRadius around the ends of all its particles)
   //  3 complete also if it crosses the beam volume (does not depend on the beam slice)
   //  4 complete for all
-  //The criteria use the space points of the whole hierarchy of the cosmic. The full dump events are complete
+  //From 2 on, also complete if the hierarchy has a mu candidate (MuCandidates, HasMuCandidate).
+  //The criteria use the space points of the whole hierarchy of the cosmic. The full dump events are
+  //complete. From CosmicsMode 2 on, every criterion is evaluated (whether it applies or not) and
+  //saved in CosmicCriteria, so that in the full dump events it is known what would be complete
   const int mode = fFullDump ? 4 : fCosmicsMode;
 
   //look for interesting cosmics and add them to the particle vector if they have not been added previously
   for(const recob::PFParticle& ls_part : (*pfpHandle)){
     if(GetRecoParticle(bunch, ls_part.Self()))continue;
     if(!IsInterestingCosmic(evt,&ls_part))continue;
-    cosmics++;
-    if(mode >= 4)fFillDetail = true;
-    else if(mode >= 2){
-      std::vector<art::Ptr<recob::SpacePoint>> sps;
-      GetHierarchySpacePoints(*pfpHandle, ls_part, sps);
-      fFillDetail = IsNearBeamSlice(sps) || (mode >= 3 && IsInBeamVolume(sps));
+    fCosmicCriteria = -999;
+    if(mode >= 2 || onlyMuCandidates){
+      fCosmicCriteria = 0;
+      if(fMuCandidates && HasMuCandidate(evt, *pfpHandle, ls_part))fCosmicCriteria |= AnaParticlePD::kCosmicMuCandidate;
+      if(!onlyMuCandidates){
+	std::vector<art::Ptr<recob::SpacePoint>> sps;
+	GetHierarchySpacePoints(*pfpHandle, ls_part, sps);
+	if(IsNearBeamSlice(sps))fCosmicCriteria |= AnaParticlePD::kCosmicNearBeamSlice;
+	if(IsInBeamVolume(sps)) fCosmicCriteria |= AnaParticlePD::kCosmicInBeamVolume;
+      }
     }
+    if(onlyMuCandidates && !(fCosmicCriteria & AnaParticlePD::kCosmicMuCandidate))continue;
+    cosmics++;
+    if(mode >= 4 || onlyMuCandidates)fFillDetail = true;
+    else if(mode >= 2)
+      fFillDetail = (fCosmicCriteria & (AnaParticlePD::kCosmicNearBeamSlice | AnaParticlePD::kCosmicMuCandidate)) ||
+	(mode >= 3 && (fCosmicCriteria & AnaParticlePD::kCosmicInBeamVolume));
     else fFillDetail = false;
     if(fFillDetail)detailed++;
     FillParticleInfo(evt, pfpHandle, &ls_part, trueParticles, bunch, -1, false);
   }
   fFillDetail = true;
+  fCosmicCriteria = -999;
   fNCosmics         = cosmics;
   fNCosmicsDetailed = detailed;
 }
@@ -1599,6 +1650,49 @@ bool highlandAnalysis::CreateHighlandMiniTree::IsInBeamVolume(const std::vector<
     }
     if(perp2 < r2)return true;
   }
+  return false;
+}
+
+//*****************************************************************************
+double highlandAnalysis::CreateHighlandMiniTree::DistanceToBeamAxis(const geo::Point_t& x) const {
+//*****************************************************************************
+
+  //distance to the segment of the nominal beam axis (the axis of the beam volume)
+  const std::vector<double>& start = fBeamVolumeStart[fIsMC ? 1 : 0];
+  const std::vector<double>& dir   = fBeamVolumeDirection[fIsMC ? 1 : 0];
+  const double d[3] = {x.X() - start[0], x.Y() - start[1], x.Z() - start[2]};
+  double t = d[0]*dir[0] + d[1]*dir[1] + d[2]*dir[2];
+  t = std::min(std::max(t, 0.), fBeamVolumeLength);
+  double r2 = 0;
+  for(int i = 0; i < 3; i++){
+    const double c = d[i] - t*dir[i];
+    r2 += c*c;
+  }
+  return std::sqrt(r2);
+}
+
+//*****************************************************************************
+bool highlandAnalysis::CreateHighlandMiniTree::HasMuCandidate(art::Event const &evt,
+							      const std::vector<recob::PFParticle>& pfps,
+							      const recob::PFParticle& ls_part){
+//*****************************************************************************
+
+  //the PFParticle (track only: it is what is saved as kTrack)
+  const recob::Track* track = GetPFParticleTrack(evt, ls_part);
+  if(track && track->Length() > fMuCandidateLength[0] && track->Length() < fMuCandidateLength[1]){
+    auto inside = [this](const geo::Point_t& x){
+      const double c[3] = {x.X(), x.Y(), x.Z()};
+      for(int i = 0; i < 3; i++)
+	if(c[i] < fActiveVolume[2*i] + fMuCandidateStopMargin || c[i] > fActiveVolume[2*i+1] - fMuCandidateStopMargin)return false;
+      return true;
+    };
+    const geo::Point_t a = track->Start(), b = track->End();
+    if((inside(a) || inside(b)) && std::min(DistanceToBeamAxis(a), DistanceToBeamAxis(b)) < fMuCandidateAxisRadius)return true;
+  }
+
+  //and its descendants (PFParticle::Daughters() are indices in the collection)
+  for(size_t dau : ls_part.Daughters())
+    if(dau < pfps.size() && HasMuCandidate(evt, pfps, pfps[dau]))return true;
   return false;
 }
 
