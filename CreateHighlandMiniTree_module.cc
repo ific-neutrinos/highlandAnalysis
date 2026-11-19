@@ -982,9 +982,17 @@ void highlandAnalysis::CreateHighlandMiniTree::FillBeamInfo(art::Event const &ev
   std::vector< int > pdgs = fBeamlineUtils.GetPID(beamEvent, fNominalBeamMom);
   beam->PDGs.insert(beam->PDGs.end(), pdgs.begin(), pdgs.end());
 
-  beam->nFibers[0] = beamEvent.GetActiveFibers( "XBPF022697" ).size();
-  beam->nFibers[1] = beamEvent.GetActiveFibers( "XBPF022701" ).size();
-  beam->nFibers[2] = beamEvent.GetActiveFibers( "XBPF022702" ).size();
+  //GetActiveFibers prints "FBM ... not found in list" to std::cout when the fiber monitor is not in
+  //the event (bad beamline trigger) and returns an empty list; the class has no way to check it
+  //first, so std::cout is silenced only for these calls (same values)
+  {
+    std::ostringstream sink;
+    std::streambuf* old = std::cout.rdbuf(sink.rdbuf());
+    beam->nFibers[0] = beamEvent.GetActiveFibers( "XBPF022697" ).size();
+    beam->nFibers[1] = beamEvent.GetActiveFibers( "XBPF022701" ).size();
+    beam->nFibers[2] = beamEvent.GetActiveFibers( "XBPF022702" ).size();
+    std::cout.rdbuf(old);
+  }
 
   if(beam->nTracks > 0){
 
