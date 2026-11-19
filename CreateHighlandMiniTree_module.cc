@@ -114,6 +114,7 @@ public:
   std::string MissingRecoProducts(art::Event const &evt) const;
   void BuildEventCaches    (art::Event const &evt, bool recoComplete);
   void FillEventInfo       (art::Event const &evt, AnaEventInfoPD* info);
+  int  CountBeamRegionSpacePoints(art::Event const &evt) const;
   void FillDQInfo          (art::Event const &evt, AnaDataQualityPD* dq);
   void FillForcedTrack     (art::Event const &evt, const recob::PFParticle* ls_part, AnaParticlePD* part);
   void FillTrueHitCounts   (std::vector<AnaTrueParticleB*>& trueParticles);
@@ -283,6 +284,12 @@ private:
 
   double      fNominalBeamMom;
 
+  // empty event finder, as protoana::ProtoDUNEEmptyEventFinder (same parameters), but counting all
+  // the space points in the box, so that the threshold can be changed later
+  std::string        fEmptySpacePointLabel;
+  unsigned int       fEmptyNThreshold;
+  std::vector<float> fEmptyMin[2], fEmptyMax[2];   // [0] data, [1] MC
+
   bool        fVerbose;  // flow of each event: one line per step
   bool        fDebug;    // details of each particle
 
@@ -352,6 +359,13 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
 
   fNominalBeamMom(p.get<double>("NominalBeamMom")), 
 
+  fEmptySpacePointLabel(p.get<fhicl::ParameterSet>("EmptyEventFinder").get<std::string>("SpacePointLabel", "reco3d")),
+  fEmptyNThreshold(p.get<fhicl::ParameterSet>("EmptyEventFinder").get<unsigned int>("NHitsThreshold", 10)),
+  fEmptyMin{p.get<fhicl::ParameterSet>("EmptyEventFinder").get<std::vector<float>>("MinCoordValuesData"),
+            p.get<fhicl::ParameterSet>("EmptyEventFinder").get<std::vector<float>>("MinCoordValuesSim")},
+  fEmptyMax{p.get<fhicl::ParameterSet>("EmptyEventFinder").get<std::vector<float>>("MaxCoordValuesData"),
+            p.get<fhicl::ParameterSet>("EmptyEventFinder").get<std::vector<float>>("MaxCoordValuesSim")},
+
   fVerbose(p.get<bool>("Verbose", true)),
   fDebug(p.get<bool>("Debug", false)),
   fFullDump(false),
@@ -369,6 +383,10 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
     if(norm <= 0)throw cet::exception("CreateHighlandMiniTree") << "BeamVolumeDirection{Data,MC} cannot be zero";
     for(double& d : dir)d /= norm;
   }
+
+  for(int k = 0; k < 2; k++)
+    if(fEmptyMin[k].size() != 3 || fEmptyMax[k].size() != 3)
+      throw cet::exception("CreateHighlandMiniTree") << "EmptyEventFinder: the {Min,Max}CoordValues{Data,Sim} must have 3 components";
 
   std::vector<int> dumpPDGs = p.get<std::vector<int>>("FullDumpTruePDGs", {});
   fFullDumpTruePDGs.insert(dumpPDGs.begin(), dumpPDGs.end());
@@ -432,13 +450,16 @@ void highlandAnalysis::CreateHighlandMiniTree::analyze(art::Event const & evt){
   spill->EventInfo = MakeEventInfo();
   AnaEventInfoPD& info = *static_cast<AnaEventInfoPD*>(spill->EventInfo);
   FillEventInfo(evt, &info);
+  if(info.NBeamRegionSpacePoints < 0)PrintStep("Empty event finder", "no " + fEmptySpacePointLabel + " space points: EmptyEvent = false" + elapsed());
+  else PrintStep("Empty event finder", str(info.NBeamRegionSpacePoints, " ", fEmptySpacePointLabel, " space points at the beam entrance",
+					   (info.EmptyEvent ? ": empty event" : "")) + elapsed());
 
   //Events that fail a check are saved anyway, marked, for the normalization:
   //  - bad beamline trigger: DataQuality->GoodDaq = false, Beam but no bunch (the analyses
   //    do not see them: highland creates the events from the bunches)
   //  - no true beam particle (MC): TrueParticles without the beam particle
   //  - no beam slice: EventInfo->HasPandora = false, a bunch without beam-slice particles
-  //  - missing Pandora products: as without beam slice, also EmptyEvent = true, without
+  //  - missing Pandora products: as without beam slice, also MissingReco = true, without
   //    cosmics, unassociated hits nor true hit counts
 
   //data quality and check
@@ -664,8 +685,34 @@ void highlandAnalysis::CreateHighlandMiniTree::FillEventInfo(art::Event const &e
   info->NominalBeamMom = fNominalBeamMom;
   //also true when the PFParticles are missing (MissingRecoProducts)
   auto pfpHandle = evt.getHandle<std::vector<recob::PFParticle>>(fPFParticleTag);
-  info->EmptyEvent = !pfpHandle || pfpHandle->empty();
+  info->MissingReco = !pfpHandle || pfpHandle->empty();
+  //no beam activity at the TPC entrance (ProtoDUNEEmptyEventFinder); false without reco3d
+  info->NBeamRegionSpacePoints = CountBeamRegionSpacePoints(evt);
+  info->EmptyEvent = info->NBeamRegionSpacePoints >= 0 && (unsigned int)info->NBeamRegionSpacePoints < fEmptyNThreshold;
   info->HasPandora = false; //set to true in analyze() if there is a beam slice
+}
+
+//*****************************************************************************
+int highlandAnalysis::CreateHighlandMiniTree::CountBeamRegionSpacePoints(art::Event const &evt) const{
+//*****************************************************************************
+
+  //space points of SpacePointSolver (independent of Pandora) in the box at the beam entrance,
+  //as protoana::ProtoDUNEEmptyEventFinder::IsEmptyEvent (same cuts), but counting all of them;
+  //-1 if the product is missing (read with getHandle: it is not required)
+  auto spHandle = evt.getHandle<std::vector<recob::SpacePoint>>(fEmptySpacePointLabel);
+  if(!spHandle)return -1;
+  const int k = evt.isRealData() ? 0 : 1;
+  const std::vector<float>& lo = fEmptyMin[k];
+  const std::vector<float>& hi = fEmptyMax[k];
+  int n = 0;
+  for(const recob::SpacePoint& sp : *spHandle){
+    const double* xyz = sp.XYZ();
+    if(xyz[0] < lo[0] || xyz[0] > hi[0])continue;
+    if(xyz[1] < lo[1] || xyz[1] > hi[1])continue;
+    if(xyz[2] < lo[2] || xyz[2] > hi[2])continue;
+    n++;
+  }
+  return n;
 }
 
 //*****************************************************************************

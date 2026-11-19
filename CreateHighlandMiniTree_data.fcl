@@ -54,7 +54,7 @@ physics:
  # skip the stage 2 recalibration in events whose reco1/reco2 lacks the Pandora products
  # (it throws ProductNotFound and lar aborts: run 5770, event 124878, without pandoraTrack). A
  # filter that rejects an event stops the rest of the path; the analyzer, in another path, still
- # sees the event and saves it marked (HasPandora = false, EmptyEvent = true)
+ # sees the event and saves it marked (HasPandora = false, MissingReco = true)
  filters: {
    fmissing: @local::standard_missingproductfilter
  }
@@ -76,7 +76,8 @@ outputs: {}
 physics.producers.pandoracali.CaloAlg.CalAreaConstants: [1.166e-3, 1.122e-3, 1.038e-3]
 physics.producers.pandora2cali.CaloAlg.CalAreaConstants: [1.166e-3, 1.122e-3, 1.038e-3]
 
-# products the filter checks (the ones the stage 2 and the analyzer need; reco3d is not used)
+# products the filter checks (the ones the stage 2 and the analyzer need; reco3d is optional:
+# without it, EventInfo.NBeamRegionSpacePoints = -1)
 physics.filters.fmissing.Modules: ["pandora", "pandoraTrack", "pandoraShower"]
 
 physics.analyzers.highlandana.Debug:               false

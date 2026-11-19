@@ -3,6 +3,7 @@
 #include "ProtoDUNECalibration.fcl"
 #include "ProtoDUNEDataUtils.fcl"
 #include "ProtoDUNEUnstableHVFilter.fcl"
+#include "ProtoDUNEEmptyEventFinder.fcl"
 
 BEGIN_PROLOG
 
@@ -28,6 +29,11 @@ highlandAnalysis:
   MCMaxGeneration:	100	
 
   NominalBeamMom:	1.0
+
+  # EventInfo.EmptyEvent (no beam activity at the TPC entrance) and NBeamRegionSpacePoints, as
+  # PDSPAnalyzer: space points of reco3d in a box (different for data and MC). Without reco3d,
+  # NBeamRegionSpacePoints = -1 and EmptyEvent = false
+  EmptyEventFinder:     @local::standard_protoduneemptyeventfinder
 
   # ---- what to save (phase2.md) ----
   SaveHitsAllPlanes:      true   # calorimetry hits of the three planes (Hits) and the rest of hits of the PFParticle (HitsNoCalo); false: only collection plane of tracks
