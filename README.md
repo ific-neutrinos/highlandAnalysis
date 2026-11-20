@@ -23,7 +23,7 @@ source localProducts*/setup
 mrbsetenv
 ```
 
-mrb v4 no vale (el área pide mrb >= v5). Algún setup deja `/products/cmake/v3_27_4/bin/` delante
+Versión completa en `justin/setup_larsoft.example.sh` (copiarla a la raíz del área como `setup_larsoft.sh`): con `PD_TOKEN` elige el token (justIN para samweb y justIN; `interactive` para escribir en persistent). mrb v4 no vale (el área pide mrb >= v5). Algún setup deja `/products/cmake/v3_27_4/bin/` delante
 en el `PATH`: después de cada `mrbsetenv` hay que quitar del `PATH` los cmake que no sean la
 v3_22_2 y hacer `hash -r` (en el `setup_larsoft.sh` de referencia, funciones `fixcmake` y
 `checkenv`).
