@@ -12,10 +12,11 @@
 # separados por comas, un --site por cada uno: los ficheros se leen por xrootd desde FNAL y lejos
 # de allí la lectura domina el tiempo; workflow 23322), LIST (lista dentro de pdsp_runtime/lists;
 # por defecto filelist_<mode>.txt), FILES_PER_JOB (ficheros por trabajo, 1 por defecto; subir
-# WALL_SECONDS en proporción: hasta ~40 min por fichero de MC lejos de FNAL), RSS_MIB,
+# WALL_SECONDS en proporción: hasta ~40 min por fichero de MC lejos de FNAL), RSS_MIB (8000 por
+# defecto: VmHWM máxima 6,96 GB en FermiGrid, workflow 23390),
 # WALL_SECONDS, DRYRUN=1 (solo imprime el comando).
 set -eu
-[[ $# -lt 3 ]] && { sed -n '2,16p' "$0"; exit 1; }
+[[ $# -lt 3 ]] && { sed -n '2,17p' "$0"; exit 1; }
 MODE=$1; N=$2; TARDIR=$3; NEV=${4:--1}
 [[ "$MODE" == mc || "$MODE" == data ]] || { echo "ERROR: mode tiene que ser mc o data"; exit 1; }
 
@@ -28,7 +29,7 @@ CMD=(justin simple-workflow
      --description "pdsp minitree $MODE $DATE"
      --monte-carlo "$N"
      --jobscript "$HERE/pdsp_minitree.jobscript"
-     --rss-mib "${RSS_MIB:-5000}"
+     --rss-mib "${RSS_MIB:-8000}"
      --wall-seconds "${WALL_SECONDS:-14400}"
      --env MODE="$MODE"
      --env NEVENTS="$NEV"

@@ -56,7 +56,9 @@ highlandAnalysis:
   MuCandidateStopMargin:  10.    # cm, an end at least this far from the faces of the active volume
   ActiveVolume:           [-360., 360., 0., 607.5, 0., 695.] # cm, TPC active volume (no SCE)
   # beam axis, different for data and MC. Start: mean of the 6 GeV beam quality cuts of highlandPD
-  # (pdUtils.parameters.dat). Direction: nominal value, to be measured in data and MC
+  # (pdUtils.parameters.dat). Valid for 3-7 GeV: the means of the 3 and 7 GeV cuts differ by 1-2 cm,
+  # nothing next to BeamVolumeRadius and MuCandidateAxisRadius. Direction: nominal value, to be
+  # measured in data and MC (highlandPD test/phase2/beam_axis_minitrees.C)
   BeamVolumeStartData:     [-28.6, 424.6, 0.96]  # cm
   BeamVolumeStartMC:       [-30.1, 423.0, 0.0]   # cm
   BeamVolumeDirectionData: [-0.18, -0.20, 0.96]
