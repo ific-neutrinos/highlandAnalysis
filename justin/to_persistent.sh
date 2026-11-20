@@ -33,7 +33,9 @@ renew(){ htgettoken -i dune --vaultserver htvaultprod.fnal.gov -r interactive > 
 https_of(){ echo "https://fndcadoor.fnal.gov:2880/dune/${1#/pnfs/dune/}"; }
 root_of(){  echo "root://fndcadoor.fnal.gov:1094/pnfs/fnal.gov/usr/dune/${1#/pnfs/dune/}"; }
 size_of(){  stat -c %s "$1" 2>/dev/null || echo -1; }   # solo lee metadatos (también en /pnfs)
-dav(){ curl -sS --capath "$X509_CERT_DIR" -H "Authorization: Bearer $(cat "$BEARER_TOKEN_FILE")" "$@"; }
+# -L --location-trusted: la puerta de dCache responde 307 y manda los datos a un pool (otro host);
+# sin -L curl crea el fichero vacío y para, y sin --location-trusted no reenvía el token al pool
+dav(){ curl -sS -L --location-trusted --capath "$X509_CERT_DIR" -H "Authorization: Bearer $(cat "$BEARER_TOKEN_FILE")" "$@"; }
 
 renew
 httokendecode -H 2>/dev/null | grep -q "storage.create:/persistent/users/$USER" \
