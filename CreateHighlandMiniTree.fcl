@@ -50,12 +50,16 @@ highlandAnalysis:
   # the beam slice). Chosen with the 6 GeV MC (2026-11-19): of the mu of K+ outside the beam slice that
   # CosmicsMode 2 leaves in summary, recovers 101 of 288 for +5.5 complete PFParticles per event (with
   # 180-300 MeV/c). Widened on 2026-11-20 to 150-350 MeV/c (sidebands on both sides of the peak at
-  # ~230 MeV/c also outside the beam slice; x1.35 candidates) and extended to the PFParticles without
-  # track (MuCandidateShowers: Pandora calls shower about a third of these mu; x1.4)
+  # ~230 MeV/c also outside the beam slice; x1.35 candidates). With the ancestors of the truth
+  # (SaveTrueAncestors), +4 % of file size (10 MC events, 2026-11-20)
   MuCandidates:           true
   MuCandidatesWithoutBeamSlice: true # in events without beam slice, save those hierarchies (only them, complete)
   MuCandidateLength:      [21.20, 104.53] # cm, mu range (pdAnaUtils::ComputeRangeMomentum) of 150 and 350 MeV/c
-  MuCandidateShowers:     true   # also the PFParticles without track, with their forced track (ForcedTrackTag)
+  # also the PFParticles without track, with their forced track (ForcedTrackTag). Pandora calls shower
+  # about a third of these mu, but most showers of cosmics have a forced track of this length and their
+  # whole hierarchies are saved: +61 % of file size (instead of +4 %) in 10 MC events (2026-11-20). Off
+  # until there is a finer criterion
+  MuCandidateShowers:     false
   MuCandidateAxisRadius:  150.   # cm, distance of an end to the beam axis (BeamVolumeStart/Direction/Length)
   MuCandidateStopMargin:  10.    # cm, an end at least this far from the faces of the active volume
   ActiveVolume:           [-360., 360., 0., 607.5, 0., 695.] # cm, TPC active volume (no SCE)
