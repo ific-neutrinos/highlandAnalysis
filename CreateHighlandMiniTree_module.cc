@@ -122,6 +122,12 @@ public:
   void FillTruePartInfo    (art::Event const &evt, const sim::ParticleList &pList, const simb::MCParticle* ls_truePart,
 			    std::vector<AnaTrueParticleB*> &trueParticles, AnaTrueParticlePD* parent, 
 			    int generation, bool recursive = true);
+  /// Ancestors of a true particle saved outside the beam chain (the TrueObject of a PFParticle), up to one
+  /// already stored, a primary (ParentID 0) or one that is not in the particle list. Each one is saved
+  /// without its daughters (generation -999). The chain is broken if the mother of the top ancestor is
+  /// neither stored nor a primary
+  void AddTrueAncestors    (art::Event const &evt, const sim::ParticleList &pList, AnaTrueParticlePD* child,
+			    std::vector<AnaTrueParticleB*> &trueParticles);
   void FillBeamInfo        (art::Event const &evt, AnaBeamPD* beam);
   void FillBunchInfo       (art::Event const &evt, std::vector<AnaTrueParticleB*>& trueParticles, AnaBunch* bunch, AnaSpillPD* spill);
   void FillParticleInfo    (art::Event const &evt, art::ValidHandle<std::vector<recob::PFParticle>> &pfpHandle, 
@@ -177,7 +183,8 @@ public:
   /// Has the hierarchy a candidate to the mu of a K+ decaying at rest? A track with length in
   /// MuCandidateLength that stops (an end inside the active volume, MuCandidateStopMargin from its
   /// faces) and has an end closer than MuCandidateAxisRadius to the nominal beam axis. It does not
-  /// depend on the beam slice
+  /// depend on the beam slice. With MuCandidateShowers, the PFParticles without track are tested with
+  /// their forced track (ForcedTrackTag)
   bool HasMuCandidate(art::Event const &evt, const std::vector<recob::PFParticle>& pfps, const recob::PFParticle& ls_part);
   /// Distance (cm) from a point to the nominal beam axis (segment of BeamVolumeLength from BeamVolumeStart)
   double DistanceToBeamAxis(const geo::Point_t& x) const;
@@ -269,6 +276,7 @@ private:
   std::vector<double> fMuCandidateLength;  // cm, [min, max]
   double      fMuCandidateAxisRadius;      // cm
   double      fMuCandidateStopMargin;      // cm
+  bool        fMuCandidateShowers;         // also PFParticles without track, with their forced track
   std::vector<double> fActiveVolume;       // cm, [xmin, xmax, ymin, ymax, zmin, zmax]
   // beam axis, different for data and MC: point at the TPC entrance (cm) and direction
   // (normalized in the constructor). Index 0 data, 1 MC
@@ -286,6 +294,7 @@ private:
   bool        fSaveForcedTrackHits;  // also the hits and trajectory points of the forced track (otherwise only the summary)
   std::string fForcedCalorimetryTag;
   bool        fSaveTrueHitCounts;    // MC: save NHitsTrue and EDepTrue of the true particles (the hits are always backtracked)
+  bool        fSaveTrueAncestors;    // MC: save the ancestors of the true particles stored outside the beam chain (AddTrueAncestors)
   protoana::ProtoDUNEDataUtils fDataUtils;
   art::InputTag fRawDigitTag;          // the products ProtoDUNEDataUtils needs (from its configuration)
   art::InputTag fRawDigitTimeStampTag;
@@ -355,6 +364,7 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fMuCandidateLength(p.get<std::vector<double>>("MuCandidateLength", {31.76, 82.00})),
   fMuCandidateAxisRadius(p.get<double>("MuCandidateAxisRadius", 150.)),
   fMuCandidateStopMargin(p.get<double>("MuCandidateStopMargin", 10.)),
+  fMuCandidateShowers(p.get<bool>("MuCandidateShowers", false)),
   fActiveVolume(p.get<std::vector<double>>("ActiveVolume", {-360., 360., 0., 607.5, 0., 695.})),
   fBeamVolumeStart{p.get<std::vector<double>>("BeamVolumeStartData"), p.get<std::vector<double>>("BeamVolumeStartMC")},
   fBeamVolumeDirection{p.get<std::vector<double>>("BeamVolumeDirectionData"), p.get<std::vector<double>>("BeamVolumeDirectionMC")},
@@ -369,6 +379,7 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fSaveForcedTrackHits(p.get<bool>("SaveForcedTrackHits", false)),
   fForcedCalorimetryTag(p.get<std::string>("ForcedCalorimetryTag", "pandora2cali")),
   fSaveTrueHitCounts(p.get<bool>("SaveTrueHitCounts", true)),
+  fSaveTrueAncestors(p.get<bool>("SaveTrueAncestors", false)),
   fDataUtils(p.get<fhicl::ParameterSet>("DataUtils")),
   fRawDigitTag(p.get<fhicl::ParameterSet>("DataUtils").get<art::InputTag>("RawDigitTag")),
   fRawDigitTimeStampTag(p.get<fhicl::ParameterSet>("DataUtils").get<art::InputTag>("RawDigitTimeStampTag")),
@@ -978,6 +989,42 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
       if(generation < fMCMaxGeneration && ls_truePart->NumberDaughters() > 0)
 	FillTruePartInfo(evt, pList, ls_trueDau, trueParticles, truePart, generation, recursive);
     }
+  }
+}
+
+//*****************************************************************************
+void highlandAnalysis::CreateHighlandMiniTree::AddTrueAncestors(art::Event const &evt,
+								const sim::ParticleList &pList,
+								AnaTrueParticlePD* child,
+								std::vector<AnaTrueParticleB*>& trueParticles){
+//*****************************************************************************
+
+  //the recursion of FillTruePartInfo from the beam particle skips some daughters (delta rays, and
+  //those not available in the particle list), and everything below them; a particle matched later
+  //to a PFParticle is then stored alone. Go up from it until a stored particle
+  for(int depth = 0; depth < 1000 && child->ParentID != 0; depth++){
+    //already stored: done
+    for(AnaTrueParticleB* t : trueParticles){
+      if(t->ID != child->ParentID)continue;
+      child->ParentPDG = t->PDG;
+      if(fDebug)std::cout << "       ancestors of true particle: joined the stored particle " << t->ID << " (PDG " << t->PDG << ")" << std::endl;
+      return;
+    }
+    //not in the particle list (dropped or archived by the simulation): the chain stays broken
+    auto it = pList.find(child->ParentID);
+    if(it == pList.end() || !it->second){
+      if(fDebug)std::cout << "       ancestors of true particle: mother " << child->ParentID << " of " << child->ID
+			  << " (PDG " << child->PDG << ") not in the particle list" << std::endl;
+      return;
+    }
+    const simb::MCParticle* ls_mother = it->second;
+    if(fDebug)std::cout << "       ancestors of true particle: adding " << ls_mother->TrackId() << " (PDG " << ls_mother->PdgCode()
+			<< ", created by " << ls_mother->Process() << ", mother " << ls_mother->Mother() << ")" << std::endl;
+    FillTruePartInfo(evt, pList, ls_mother, trueParticles, NULL, -999, false);
+    AnaTrueParticlePD* mother = static_cast<AnaTrueParticlePD*>(trueParticles.back());
+    child->ParentPDG  = mother->PDG;
+    child->GParentPDG = mother->ParentPDG;
+    child = mother;
   }
 }
 
@@ -1677,8 +1724,10 @@ bool highlandAnalysis::CreateHighlandMiniTree::HasMuCandidate(art::Event const &
 							      const recob::PFParticle& ls_part){
 //*****************************************************************************
 
-  //the PFParticle (track only: it is what is saved as kTrack)
+  //the PFParticle: its track or, if it has none and MuCandidateShowers, its forced track (Pandora calls
+  //shower about a third of the mu of K+ at rest, probably because of the Michel electron at the end)
   const recob::Track* track = GetPFParticleTrack(evt, ls_part);
+  if(!track && fMuCandidateShowers)track = GetPFParticleTrack(evt, ls_part, true);
   if(track && track->Length() > fMuCandidateLength[0] && track->Length() < fMuCandidateLength[1]){
     auto inside = [this](const geo::Point_t& x){
       const double c[3] = {x.X(), x.Y(), x.Z()};
@@ -1793,6 +1842,9 @@ void highlandAnalysis::CreateHighlandMiniTree::TrueRecoMatching(art::Event const
       FillTruePartInfo(evt, pList, it->second, trueParticles, NULL, -999, false);
       part->TrueObject = trueParticles.back();
       found = true;
+      //its ancestors, so that the analyses know where it comes from (e.g. if a K+ comes from the
+      //interaction of the beam particle)
+      if(fSaveTrueAncestors)AddTrueAncestors(evt, pList, static_cast<AnaTrueParticlePD*>(trueParticles.back()), trueParticles);
     }
   }
   

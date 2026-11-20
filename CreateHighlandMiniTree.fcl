@@ -46,12 +46,16 @@ highlandAnalysis:
   CosmicsRadius:          50.    # cm, distance to the ends of all the beam-slice particles (CosmicsMode >= 2)
   CosmicsWithoutBeamSlice: false # also in events without beam slice (they are not analysed; only EventInfo, Beam, DQ and truth are needed)
   # mu candidates (mu+ of K+ decaying at rest), from CosmicsMode 2: complete the hierarchies with a track
-  # of mu range momentum 180-300 MeV/c that stops and has an end near the beam axis (it does not need
+  # of mu range momentum 150-350 MeV/c that stops and has an end near the beam axis (it does not need
   # the beam slice). Chosen with the 6 GeV MC (2026-11-19): of the mu of K+ outside the beam slice that
-  # CosmicsMode 2 leaves in summary, recovers 101 of 288 for +5.5 complete PFParticles per event
+  # CosmicsMode 2 leaves in summary, recovers 101 of 288 for +5.5 complete PFParticles per event (with
+  # 180-300 MeV/c). Widened on 2026-11-20 to 150-350 MeV/c (sidebands on both sides of the peak at
+  # ~230 MeV/c also outside the beam slice; x1.35 candidates) and extended to the PFParticles without
+  # track (MuCandidateShowers: Pandora calls shower about a third of these mu; x1.4)
   MuCandidates:           true
   MuCandidatesWithoutBeamSlice: true # in events without beam slice, save those hierarchies (only them, complete)
-  MuCandidateLength:      [31.76, 82.00] # cm, mu range (pdAnaUtils::ComputeRangeMomentum) of 180 and 300 MeV/c
+  MuCandidateLength:      [21.20, 104.53] # cm, mu range (pdAnaUtils::ComputeRangeMomentum) of 150 and 350 MeV/c
+  MuCandidateShowers:     true   # also the PFParticles without track, with their forced track (ForcedTrackTag)
   MuCandidateAxisRadius:  150.   # cm, distance of an end to the beam axis (BeamVolumeStart/Direction/Length)
   MuCandidateStopMargin:  10.    # cm, an end at least this far from the faces of the active volume
   ActiveVolume:           [-360., 360., 0., 607.5, 0., 695.] # cm, TPC active volume (no SCE)
@@ -75,6 +79,11 @@ highlandAnalysis:
   SaveForcedTrackHits:    false  # also its hits (with calorimetry) and trajectory points; otherwise ends, length and chi2 only
   ForcedCalorimetryTag:   "pandora2cali"
   SaveTrueHitCounts:      true   # MC: NHitsTrue and EDepTrue of the true particles (all the hits are always backtracked once: TrueID of the hits, purity, completeness)
+  # MC: the ancestors of the true particles matched to a PFParticle but not reached by the recursion from
+  # the beam particle (MCMaxGeneration), up to a stored one. Without them ~40 % of the mu+ of K+ at rest
+  # could not be traced back to the beam (6 GeV MC, 2026-11-20): needed to know if the K+ comes from the
+  # interaction of the beam particle
+  SaveTrueAncestors:      true
 
   # data quality: what the FEMB and unstable HV filters check, saved instead of filtering (data only)
   DataUtils:              @local::standard_protodunedatautils

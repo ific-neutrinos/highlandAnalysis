@@ -63,9 +63,12 @@ principal:
 - `CosmicsMode` (0-4) y `CosmicsRadius`: qué cósmicos se guardan completos y cuáles en resumen.
   Por defecto 2: completos los que están cerca de los extremos de la beam slice.
 - `MuCandidates`: completos también los candidatos a mu de K+ en reposo (traza parada con rango de
-  mu de 180-300 MeV/c cerca del eje del haz), también sin beam slice
-  (`MuCandidatesWithoutBeamSlice`). `AnaParticlePD::CosmicCriteria` dice qué criterio pasó cada
-  jerarquía.
+  mu de 150-350 MeV/c cerca del eje del haz; con `MuCandidateShowers`, también los PFParticles sin
+  traza, con su traza forzada), también sin beam slice (`MuCandidatesWithoutBeamSlice`).
+  `AnaParticlePD::CosmicCriteria` dice qué criterio pasó cada jerarquía.
+- `SaveTrueAncestors` (MC): las madres de las partículas true emparejadas con un PFParticle que la
+  recursión desde el haz no alcanza, hasta una ya guardada. Sin ellas no se sabe de dónde viene ~40 %
+  de los mu+ de K+ en reposo.
 - `BeamVolume*`: eje del haz, distinto en datos y MC. Vale para 3-7 GeV.
 - `FullDumpTruePDGs` (MC): volcado completo de los eventos con esos PDG en la cadena del haz (en
   el fcl de MC, `[321]`, para estudios de eficiencia).
