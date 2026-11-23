@@ -4,12 +4,12 @@
 #   to_persistent.sh <origen> <destino_en_persistent> [patrón]
 #
 # <origen>: un directorio local (p. ej. /exp/dune/data/...) o uno de /pnfs/dune/... (se baja cada
-# fichero por xrdcp a un temporal). <destino_en_persistent>: ruta /pnfs/dune/persistent/users/$USER/...
+# fichero por WebDAV a un temporal, con el mismo token; no hace falta proxy X.509). <destino_en_persistent>: ruta /pnfs/dune/persistent/users/$USER/...
 # [patrón]: glob de los ficheros (por defecto '*.root').
 #
 # Sube por HTTPS (WebDAV de dCache, puerto 2880) con curl y el token interactivo de DUNE, que es el
 # que tiene storage.create:/persistent/users/$USER (el de por defecto no; 20-nov-2026). El xrdcp
-# del contenedor SL7 no sabe usar tokens (aviso de secztn), por eso curl.
+# del contenedor SL7 no sabe usar tokens (aviso de secztn), por eso curl, también para bajar.
 # Antes, una vez: htgettoken -i dune --vaultserver htvaultprod.fnal.gov -r interactive
 # El token se renueva cada RENEW ficheros (100 por defecto) con el refresh token, sin navegador.
 #
@@ -32,7 +32,6 @@ export X509_CERT_DIR=${X509_CERT_DIR:-/cvmfs/oasis.opensciencegrid.org/mis/certi
 renew(){ htgettoken -i dune --vaultserver htvaultprod.fnal.gov -r interactive > /dev/null 2>&1 \
            || { echo "ERROR: no se pudo renovar el token (htgettoken -r interactive a mano)"; exit 1; }; }
 https_of(){ echo "https://fndcadoor.fnal.gov:2880/dune/${1#/pnfs/dune/}"; }
-root_of(){  echo "root://fndcadoor.fnal.gov:1094/pnfs/fnal.gov/usr/dune/${1#/pnfs/dune/}"; }
 size_of(){  stat -c %s "$1" 2>/dev/null || echo -1; }   # solo lee metadatos (también en /pnfs)
 # -L --location-trusted: la puerta de dCache responde 307 y manda los datos a un pool (otro host);
 # sin -L curl crea el fichero vacío y para, y sin --location-trusted no reenvía el token al pool
@@ -66,9 +65,12 @@ for f in "${FILES[@]}"; do
   local_file="$SRC/$f"
   if (( FROM_PNFS )); then
     local_file="$TMPC/$f"
-    if ! err=$(xrdcp -s -f "$(root_of "$SRC/$f")" "$local_file" 2>&1); then
-      echo "$f xrdcp: $(echo "$err" | grep -v secztn | tail -1)" >> "$FAILED"; bad=$((bad+1)); consec=$((consec+1))
-      check_consec; continue
+    # bajada por WebDAV con el mismo token (el xrdcp del contenedor usa el proxy X.509, que en una
+    # dunegpvm con el token interactivo no suele estar: "Auth failed (source)", 23-nov-2026)
+    gcode=$(dav "$(https_of "$SRC/$f")" -o "$local_file" -w "%{http_code}" 2>&1 | tail -c 3)
+    if [[ "$gcode" != 200 || "$(size_of "$local_file")" != "$ssize" ]]; then
+      echo "$f bajada http=$gcode (tamaño $(size_of "$local_file") de $ssize)" >> "$FAILED"; rm -f "$local_file"
+      bad=$((bad+1)); consec=$((consec+1)); check_consec; continue
     fi
   fi
   code=$(dav -T "$local_file" "$(https_of "$DEST/$f")" -o /dev/null -w "%{http_code}")
