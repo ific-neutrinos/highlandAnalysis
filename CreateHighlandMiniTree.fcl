@@ -57,9 +57,11 @@ highlandAnalysis:
   MuCandidateLength:      [21.20, 104.53] # cm, mu range (pdAnaUtils::ComputeRangeMomentum) of 150 and 350 MeV/c
   # also the PFParticles without track, with their forced track (ForcedTrackTag). Pandora calls shower
   # about a third of these mu, but most showers of cosmics have a forced track of this length and their
-  # whole hierarchies are saved: +61 % of file size (instead of +4 %) in 10 MC events (2026-11-20). Off
-  # until there is a finer criterion
-  MuCandidateShowers:     false
+  # whole hierarchies are saved: +61 % of file size (instead of +4 %) in 10 MC events (2026-11-20).
+  # On since 2026-11-23: outside the beam slice half of the mu from K at rest are showers (only saved
+  # complete in data with this flag); their length can be measured from the space points (highlandPD
+  # mu_cand_v100d study). Storage fits (MC ~1.1 TB)
+  MuCandidateShowers:     true
   MuCandidateAxisRadius:  150.   # cm, distance of an end to the beam axis (BeamVolumeStart/Direction/Length)
   MuCandidateStopMargin:  10.    # cm, an end at least this far from the faces of the active volume
   ActiveVolume:           [-360., 360., 0., 607.5, 0., 695.] # cm, TPC active volume (no SCE)
