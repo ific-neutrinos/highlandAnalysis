@@ -15,7 +15,8 @@
 #
 # No sobrescribe: salta los ficheros que ya están en el destino con el mismo tamaño (se puede
 # relanzar tal cual si se corta). Escribe los fallos en to_persistent_failed.txt (directorio
-# actual). Variables: RENEW, TMPDIR_COPY (temporal para los de /pnfs; por defecto
+# actual; se vacía en cada ejecución) con el mensaje de error. Para tras MAXCONSEC (20) fallos
+# seguidos. Variables: RENEW, TMPDIR_COPY (temporal para los de /pnfs; por defecto
 # /tmp/to_persistent_$USER), DRYRUN=1 (solo dice qué haría).
 set -u
 [[ $# -lt 2 ]] && { sed -n '2,20p' "$0"; exit 1; }
@@ -51,7 +52,11 @@ done
 FROM_PNFS=0; [[ "$SRC" == /pnfs/dune/* ]] && { FROM_PNFS=1; mkdir -p "$TMPC"; }
 mapfile -t FILES < <(find "$SRC/" -maxdepth 1 -type f -name "$PATTERN" -printf '%f\n' | sort)
 echo "Ficheros en $SRC ($PATTERN): ${#FILES[@]} -> $DEST"
-n=0; ok=0; skip=0; bad=0
+n=0; ok=0; skip=0; bad=0; consec=0
+MAXCONSEC=${MAXCONSEC:-20}
+# con MAXCONSEC fallos seguidos para (algo general: token, proxy, /tmp lleno...) en vez de recorrer la lista entera
+check_consec(){ (( consec >= MAXCONSEC )) && { echo "ERROR: $consec fallos seguidos; para. Último: $(tail -1 "$FAILED")"; echo "Fin: copiados $ok, ya estaban $skip, fallos $bad (de ${#FILES[@]})"; exit 1; }; }
+: > "$FAILED"   # solo los fallos de esta ejecución
 for f in "${FILES[@]}"; do
   n=$((n+1))
   ssize=$(size_of "$SRC/$f")
@@ -61,12 +66,15 @@ for f in "${FILES[@]}"; do
   local_file="$SRC/$f"
   if (( FROM_PNFS )); then
     local_file="$TMPC/$f"
-    xrdcp -s -f "$(root_of "$SRC/$f")" "$local_file" 2>/dev/null || { echo "$f xrdcp" >> "$FAILED"; bad=$((bad+1)); continue; }
+    if ! err=$(xrdcp -s -f "$(root_of "$SRC/$f")" "$local_file" 2>&1); then
+      echo "$f xrdcp: $(echo "$err" | grep -v secztn | tail -1)" >> "$FAILED"; bad=$((bad+1)); consec=$((consec+1))
+      check_consec; continue
+    fi
   fi
   code=$(dav -T "$local_file" "$(https_of "$DEST/$f")" -o /dev/null -w "%{http_code}")
   (( FROM_PNFS )) && rm -f "$local_file"
-  if [[ "$code" == 201 || "$code" == 204 ]] && [[ "$(size_of "$DEST/$f")" == "$ssize" ]]; then ok=$((ok+1))
-  else echo "$f http=$code" >> "$FAILED"; bad=$((bad+1)); fi
+  if [[ "$code" == 201 || "$code" == 204 ]] && [[ "$(size_of "$DEST/$f")" == "$ssize" ]]; then ok=$((ok+1)); consec=0
+  else echo "$f http=$code" >> "$FAILED"; bad=$((bad+1)); consec=$((consec+1)); check_consec; fi
   (( n % 100 == 0 )) && echo "[avance] $n de ${#FILES[@]}: copiados $ok, ya estaban $skip, fallos $bad"
 done
 echo "Fin: copiados $ok, ya estaban $skip, fallos $bad (de ${#FILES[@]})"
