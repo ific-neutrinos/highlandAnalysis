@@ -47,10 +47,31 @@ for pkg in highland highlandPD; do
     # Árbol completo (menos .git): seleccionar ficheros acaba fallando en la grid (rutas de
     # getenv, datos, cabeceras...). "$src/" con barra: copia el contenido aunque $src sea un
     # enlace simbólico.
-    rsync -a --exclude .git "$src/" "$RT/highland/$pkg/"
+    # Se excluyen solo los ficheros que git ve como no seguidos y no ignorados: las salidas sueltas
+    # de macros y análisis que se corren en el área (minitrees, .root de estudios, logs, listas).
+    # Lo seguido por git y los productos de compilación (lib/, bin/, include/, ignorados) se copian
+    # siempre. Sin esto el tarball pasó de 86 MB a > 2 GB (23-nov-2026) y justin-cvmfs-upload no
+    # lo acepta.
+    excl="$TMP/excluir_$pkg.txt"
+    if git -C "$src" rev-parse --git-dir > /dev/null 2>&1; then
+        git -C "$src" ls-files --others --exclude-standard | sed 's|^|/|' > "$excl"
+    else
+        : > "$excl"
+    fi
+    if [[ -s "$excl" ]]; then
+        echo "$pkg: se excluyen $(wc -l < "$excl") ficheros sueltos fuera de git ($(cd "$src" && sed 's|^/||' "$excl" | tr '\n' '\0' | du -ch --files0-from=- 2>/dev/null | tail -1 | cut -f1)); los mayores:"
+        (cd "$src" && sed 's|^/||' "$excl" | tr '\n' '\0' | du -h --files0-from=- 2>/dev/null | sort -h | tail -5 | sed 's/^/    /')
+    fi
+    rsync -a --exclude .git --exclude-from="$excl" "$src/" "$RT/highland/$pkg/"
 done
 
 tar -C "$TMP" -czf "$OUT" pdsp_runtime
 rm -rf "$TMP"
 du -h "$OUT"
+# justin-cvmfs-upload manda el tarball en una sola petición: más de 2 GB falla (OverflowError)
+size=$(stat -c %s "$OUT")
+if (( size > 1900000000 )); then
+    echo "ERROR: $OUT ocupa $((size/1000000)) MB: justin-cvmfs-upload no acepta más de 2 GB. Mira qué hay de más en los árboles."
+    exit 1
+fi
 echo "Siguiente: INPUT_TAR_DIR_LOCAL=\$(justin-cvmfs-upload $OUT)"
