@@ -940,10 +940,12 @@ void highlandAnalysis::CreateHighlandMiniTree::FillTruePartInfo(art::Event const
   truePart->Position[0] = ls_truePart->Position(0).X();
   truePart->Position[1] = ls_truePart->Position(0).Y();
   truePart->Position[2] = ls_truePart->Position(0).Z();
+  truePart->Position[3] = ls_truePart->T();      //time (ns): pileup with respect to the trigger (not filled up to v1_00)
 
   truePart->PositionEnd[0] = ls_truePart->EndX();
   truePart->PositionEnd[1] = ls_truePart->EndY();
   truePart->PositionEnd[2] = ls_truePart->EndZ();
+  truePart->PositionEnd[3] = ls_truePart->EndT();
 
   truePart->Direction[0] = ls_truePart->Px()/ls_truePart->P();
   truePart->Direction[1] = ls_truePart->Py()/ls_truePart->P();
