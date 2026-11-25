@@ -84,7 +84,7 @@ highlandAnalysis:
   ForcedTrackTag:         "pandora2Track"
   SaveForcedTrackHits:    true   # also its hits (with calorimetry) and trajectory points; otherwise ends, length and chi2 only
   ForcedTrackHitsAllPlanes: false # with SaveForcedTrackHits: collection plane only (the analysis only uses it); true: the planes of SaveHitsAllPlanes
-  ForcedTrackHitsMuWindow:  true  # with SaveForcedTrackHits: only the forced tracks with length in MuCandidateLength
+  ForcedTrackHitsLength:  [7.52, 219.10] # cm, with SaveForcedTrackHits: only forced tracks with this length; mu range of 100 and 600 MeV/c (pdAnaUtils::ComputeRangeMomentum), the preselection of the analysis
   ForcedCalorimetryTag:   "pandora2cali"
   SaveTrueHitCounts:      true   # MC: NHitsTrue and EDepTrue of the true particles (all the hits are always backtracked once: TrueID of the hits, purity, completeness)
   # MC: the ancestors of the true particles matched to a PFParticle but not reached by the recursion from
