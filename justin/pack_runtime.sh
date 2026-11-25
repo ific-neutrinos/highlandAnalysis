@@ -49,12 +49,15 @@ for pkg in highland highlandPD; do
     # enlace simbólico.
     # Se excluyen solo los ficheros que git ve como no seguidos y no ignorados: las salidas sueltas
     # de macros y análisis que se corren en el área (minitrees, .root de estudios, logs, listas).
-    # Lo seguido por git y los productos de compilación (lib/, bin/, include/, ignorados) se copian
-    # siempre. Sin esto el tarball pasó de 86 MB a > 2 GB (23-nov-2026) y justin-cvmfs-upload no
-    # lo acepta.
+    # Lo seguido por git y los productos de compilación (lib/, bin/, include/, *Config.cmake) se copian
+    # siempre, estén o no en el .gitignore: highland no tiene .gitignore y su lib/ salía como "suelta"
+    # (workflow 23524, 25-nov-2026: libhighland.so no estaba en el tarball y fallaron todos los
+    # trabajos). Sin la exclusión el tarball pasó de 86 MB a > 2 GB (23-nov-2026) y
+    # justin-cvmfs-upload no lo acepta.
     excl="$TMP/excluir_$pkg.txt"
     if git -C "$src" rev-parse --git-dir > /dev/null 2>&1; then
-        git -C "$src" ls-files --others --exclude-standard | sed 's|^|/|' > "$excl"
+        git -C "$src" ls-files --others --exclude-standard | sed 's|^|/|' \
+            | grep -Ev '^/(lib|bin|include)/|^/[^/]*Config\.cmake$' > "$excl" || true
     else
         : > "$excl"
     fi
@@ -64,6 +67,16 @@ for pkg in highland highlandPD; do
     fi
     rsync -a --exclude .git --exclude-from="$excl" "$src/" "$RT/highland/$pkg/"
 done
+
+# Comprobación: cada dependencia del módulo que resuelve a highland o highlandPD tiene que estar en el tarball
+missing=0
+while read -r lib; do
+    [[ "$lib" == */highland/* ]] || continue
+    if [[ -z "$(find "$RT/highland" -name "$(basename "$lib")" -print -quit)" ]]; then
+        echo "ERROR: $(basename "$lib") (dependencia del módulo) no está en el tarball"; missing=1
+    fi
+done < <(ldd "$MOD" | awk '/=>/ {print $3}')
+(( missing )) && { rm -rf "$TMP"; exit 1; }
 
 tar -C "$TMP" -czf "$OUT" pdsp_runtime
 rm -rf "$TMP"
