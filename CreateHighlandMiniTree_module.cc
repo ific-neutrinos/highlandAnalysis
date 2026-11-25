@@ -292,6 +292,8 @@ private:
   bool        fSaveForcedTracks;     // track fit forced on PFParticles without track
   std::string fForcedTrackTag;
   bool        fSaveForcedTrackHits;  // also the hits and trajectory points of the forced track (otherwise only the summary)
+  bool        fForcedTrackHitsAllPlanes;  // with SaveForcedTrackHits: hits of the three planes (if SaveHitsAllPlanes); otherwise collection only
+  bool        fForcedTrackHitsMuWindow;   // with SaveForcedTrackHits: only forced tracks with length in MuCandidateLength
   std::string fForcedCalorimetryTag;
   bool        fSaveTrueHitCounts;    // MC: save NHitsTrue and EDepTrue of the true particles (the hits are always backtracked)
   bool        fSaveTrueAncestors;    // MC: save the ancestors of the true particles stored outside the beam chain (AddTrueAncestors)
@@ -377,6 +379,8 @@ highlandAnalysis::CreateHighlandMiniTree::CreateHighlandMiniTree(fhicl::Paramete
   fSaveForcedTracks(p.get<bool>("SaveForcedTracks", true)),
   fForcedTrackTag(p.get<std::string>("ForcedTrackTag", "pandora2Track")),
   fSaveForcedTrackHits(p.get<bool>("SaveForcedTrackHits", false)),
+  fForcedTrackHitsAllPlanes(p.get<bool>("ForcedTrackHitsAllPlanes", false)),
+  fForcedTrackHitsMuWindow(p.get<bool>("ForcedTrackHitsMuWindow", true)),
   fForcedCalorimetryTag(p.get<std::string>("ForcedCalorimetryTag", "pandora2cali")),
   fSaveTrueHitCounts(p.get<bool>("SaveTrueHitCounts", true)),
   fSaveTrueAncestors(p.get<bool>("SaveTrueAncestors", false)),
@@ -833,8 +837,14 @@ void highlandAnalysis::CreateHighlandMiniTree::FillForcedTrack(art::Event const 
   ft.Length = track->Length();
 
   //trajectory points and hits only with SaveForcedTrackHits: the PFParticles without track are mostly
-  //showers, with many hits that are already in HitsNoCalo (only the calorimetry would be new)
-  if(fSaveForcedTrackHits){
+  //showers, with many hits that are already in HitsNoCalo (only the calorimetry would be new). By default
+  //only for the forced tracks with the length of a mu candidate (ForcedTrackHitsMuWindow, the window of
+  //HasMuCandidate, 150-350 MeV/c; the analysis preselects 100-600 MeV/c but its peak is at 205-240) and
+  //only the collection plane
+  //(ForcedTrackHitsAllPlanes): with all of them the minitree grows 19 % (big EM showers of the beam slice)
+  const bool saveHits = fSaveForcedTrackHits &&
+    (!fForcedTrackHitsMuWindow || (ft.Length > fMuCandidateLength[0] && ft.Length < fMuCandidateLength[1]));
+  if(saveHits){
     for(size_t i = 0; i < track->NumberTrajectoryPoints(); i++){
       AnaTrajectoryPointPD tjp;
       auto pos = track->LocationAtPoint(i);
@@ -851,10 +861,10 @@ void highlandAnalysis::CreateHighlandMiniTree::FillForcedTrack(art::Event const 
   for(const anab::Calorimetry& cal : GetRecoTrackCalorimetry(evt, *track, fForcedTrackTag, fForcedCalorimetryTag)){
     const int plane = cal.PlaneID().Plane;
     if(plane < 0 || plane > 2)continue;
-    if(!fSaveForcedTrackHits && plane != 2)continue;
-    if(plane != 2 && !fSaveHitsAllPlanes)continue;
+    if(!saveHits && plane != 2)continue;
+    if(plane != 2 && !(fSaveHitsAllPlanes && fForcedTrackHitsAllPlanes))continue;
     for(size_t ihit = 0; ihit < cal.dQdx().size(); ihit++){
-      if(!fSaveForcedTrackHits){
+      if(!saveHits){
 	dEdx.push_back((Float_t)cal.dEdx().at(ihit));             //rounded as in AnaHitPD (as before),
 	ResRange.push_back((Float_t)cal.ResidualRange().at(ihit)); //so the chi2 does not depend on SaveForcedTrackHits
 	continue;

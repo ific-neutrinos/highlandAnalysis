@@ -82,7 +82,9 @@ highlandAnalysis:
   SaveHitSignal:          false  # waveform of each hit
   SaveForcedTracks:       true   # track fit forced on the PFParticles without track (shower-like)
   ForcedTrackTag:         "pandora2Track"
-  SaveForcedTrackHits:    false  # also its hits (with calorimetry) and trajectory points; otherwise ends, length and chi2 only
+  SaveForcedTrackHits:    true   # also its hits (with calorimetry) and trajectory points; otherwise ends, length and chi2 only
+  ForcedTrackHitsAllPlanes: false # with SaveForcedTrackHits: collection plane only (the analysis only uses it); true: the planes of SaveHitsAllPlanes
+  ForcedTrackHitsMuWindow:  true  # with SaveForcedTrackHits: only the forced tracks with length in MuCandidateLength
   ForcedCalorimetryTag:   "pandora2cali"
   SaveTrueHitCounts:      true   # MC: NHitsTrue and EDepTrue of the true particles (all the hits are always backtracked once: TrueID of the hits, purity, completeness)
   # MC: the ancestors of the true particles matched to a PFParticle but not reached by the recursion from
