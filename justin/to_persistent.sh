@@ -8,7 +8,7 @@
 # scratch). <destino_en_persistent>: ruta /pnfs/dune/persistent/users/$USER/...
 # [patrón]: glob de los ficheros (por defecto '*.root').
 #
-# Autenticación: token interactivo de DUNE, el que tiene storage.create:/persistent/users/$USER
+# Autenticación: token interactivo de DUNE (en un fichero propio, ver BEARER_TOKEN_FILE abajo), el que tiene storage.create:/persistent/users/$USER
 # (el de por defecto no; 20-nov-2026). ifdh usa el token de $BEARER_TOKEN_FILE con
 # IFDH_TOKEN_ENABLE=1, y con IFDH_PROXY_ENABLE=0 no intenta el proxy X.509 (en la dunegpvm del
 # token interactivo no suele haber uno válido: "Auth failed", 23-nov-2026).
@@ -29,9 +29,15 @@ FAILED=$PWD/to_persistent_failed.txt
 
 [[ "$DEST" == /pnfs/dune/persistent/users/* ]] || { echo "ERROR: el destino tiene que estar en /pnfs/dune/persistent/users/"; exit 1; }
 command -v ifdh > /dev/null || { echo "ERROR: no hay ifdh (carga el entorno de dunesw)"; exit 1; }
-export BEARER_TOKEN_FILE=${BEARER_TOKEN_FILE:-/run/user/$(id -u)/bt_u$(id -u)}
+# Fichero de token propio: el de por defecto (/run/user/<uid>/bt_u<uid>) lo comparten todas las sesiones de la máquina
+# y samweb o justIN lo cambian por el suyo. htgettoken e ifdh leen y escriben el de BEARER_TOKEN_FILE.
+export BEARER_TOKEN_FILE=${PERSIST_TOKEN_FILE:-/tmp/bt_interactive_u$(id -u)}
 export IFDH_TOKEN_ENABLE=1
 export IFDH_PROXY_ENABLE=0
+# Sin proxy X.509 (26-nov-2026): aunque IFDH_PROXY_ENABLE=0, Davix (gfal) presenta el proxy de /tmp/x509up_u<uid> si
+# existe, y el que deja "justin get-token" (CN=justin-jobs-no-roles) hace que dCache responda HTTP 401 al leer, con un
+# token válido. Apuntando a un fichero que no existe, Davix avisa ("impossible to open") y usa solo el token.
+export X509_USER_PROXY=${PERSIST_X509_USER_PROXY:-/tmp/no_proxy_to_persistent_u$(id -u)}
 export IFDH_CP_MAXRETRIES=${IFDH_CP_MAXRETRIES:-2}
 
 renew(){ htgettoken -i dune --vaultserver htvaultprod.fnal.gov -r interactive > /dev/null 2>&1 \
