@@ -40,7 +40,10 @@ export IFDH_PROXY_ENABLE=0
 export X509_USER_PROXY=${PERSIST_X509_USER_PROXY:-/tmp/no_proxy_to_persistent_u$(id -u)}
 export IFDH_CP_MAXRETRIES=${IFDH_CP_MAXRETRIES:-2}
 
-renew(){ htgettoken -i dune --vaultserver htvaultprod.fnal.gov -r interactive > /dev/null 2>&1 \
+# Token de la vault propio (26-nov-2026): /tmp/vt_u<uid> es común a todos los roles y otro htgettoken (setup_larsoft.sh,
+# justin get-token) lo cambia por el de su rol; con uno propio la renovación del interactivo no depende de las otras sesiones.
+export VAULT_TOKEN_FILE_PERSIST=${PERSIST_VAULT_TOKEN_FILE:-/tmp/vt_interactive_u$(id -u)}
+renew(){ htgettoken -i dune --vaultserver htvaultprod.fnal.gov -r interactive --vaulttokenfile=$VAULT_TOKEN_FILE_PERSIST > /dev/null 2>&1 \
            || { echo "ERROR: no se pudo renovar el token (htgettoken -r interactive a mano)"; exit 1; }; }
 size_of(){ stat -c %s "$1" 2>/dev/null || echo -1; }   # solo lee metadatos (también en /pnfs)
 
