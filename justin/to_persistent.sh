@@ -43,8 +43,16 @@ export IFDH_CP_MAXRETRIES=${IFDH_CP_MAXRETRIES:-2}
 # Token de la vault propio (26-nov-2026): /tmp/vt_u<uid> es común a todos los roles y otro htgettoken (setup_larsoft.sh,
 # justin get-token) lo cambia por el de su rol; con uno propio la renovación del interactivo no depende de las otras sesiones.
 export VAULT_TOKEN_FILE_PERSIST=${PERSIST_VAULT_TOKEN_FILE:-/tmp/vt_interactive_u$(id -u)}
-renew(){ htgettoken -i dune --vaultserver htvaultprod.fnal.gov -r interactive --vaulttokenfile=$VAULT_TOKEN_FILE_PERSIST > /dev/null 2>&1 \
-           || { echo "ERROR: no se pudo renovar el token (htgettoken -r interactive a mano)"; exit 1; }; }
+# ifdh, si ve el token a punto de caducar, lanza su propio htgettoken (-a htvaultprod.fnal.gov -i dune) sin rol ni
+# fichero de vault: se quedaba esperando una autenticación por navegador que no se ve (28-nov-2026, copia colgada).
+# htgettoken lee HTGETTOKENOPTS: así también el de ifdh usa el rol interactive y nuestra vault, sin navegador.
+export HTGETTOKENOPTS="-r interactive --vaulttokenfile=$VAULT_TOKEN_FILE_PERSIST"
+# Si la vault caduca y hace falta el navegador, htgettoken no puede seguir solo: tiempo límite y mensaje visible.
+renew(){ local out; out=$(timeout 120 htgettoken -i dune --vaultserver htvaultprod.fnal.gov -r interactive --vaulttokenfile=$VAULT_TOKEN_FILE_PERSIST 2>&1) \
+           || { echo "ERROR: no se pudo renovar el token sin navegador. Ejecuta a mano:"; \
+                echo "  htgettoken -i dune --vaultserver htvaultprod.fnal.gov -r interactive --vaulttokenfile=$VAULT_TOKEN_FILE_PERSIST"; \
+                echo "y relanza (salta lo que ya está). Salida de htgettoken:"; echo "$out" | tail -5; fin 2>/dev/null; exit 1; }; }
+IFDH_TIMEOUT=${IFDH_TIMEOUT:-900}   # s por fichero; un ifdh colgado cuenta como fallo y se sigue
 size_of(){ stat -c %s "$1" 2>/dev/null || echo -1; }   # solo lee metadatos (también en /pnfs)
 
 renew
@@ -66,7 +74,7 @@ for f in "${FILES[@]}"; do
   if [[ "$(size_of "$DEST/$f")" == "$ssize" ]]; then skip=$((skip+1)); progress; continue; fi
   if [[ -n "${DRYRUN:-}" ]]; then echo "copiaría $f ($ssize B)"; continue; fi
   (( (ok+bad) % RENEW == RENEW-1 )) && renew
-  if err=$(ifdh cp --force=$FORCE "$SRC/$f" "$DEST/$f" 2>&1) && [[ "$(size_of "$DEST/$f")" == "$ssize" ]]; then
+  if err=$(timeout $IFDH_TIMEOUT ifdh cp --force=$FORCE "$SRC/$f" "$DEST/$f" 2>&1) && [[ "$(size_of "$DEST/$f")" == "$ssize" ]]; then
     ok=$((ok+1)); consec=0
   else
     echo "$f ifdh: $(echo "$err" | grep -v '^\s*$' | tail -1) (tamaño en destino $(size_of "$DEST/$f") de $ssize)" >> "$FAILED"
