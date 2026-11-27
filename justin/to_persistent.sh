@@ -16,7 +16,7 @@
 # ifdh elige el protocolo para las rutas /pnfs; IFDH_FORCE (por defecto https, WebDAV) lo fija.
 #
 # No sobrescribe: salta los ficheros que ya están en el destino con el mismo tamaño (se puede
-# relanzar tal cual si se corta). Escribe los fallos de esta ejecución, con el error de ifdh, en
+# relanzar tal cual si se corta). Avance cada 100 ficheros, también los que salta (comprobar tamaños en /pnfs es lento). Escribe los fallos de esta ejecución, con el error de ifdh, en
 # to_persistent_failed.txt (directorio actual) y para tras MAXCONSEC (20) fallos seguidos.
 # Variables: RENEW, MAXCONSEC, IFDH_FORCE, DRYRUN=1 (solo dice qué haría).
 set -u
@@ -58,11 +58,12 @@ echo "Ficheros en $SRC ($PATTERN): ${#FILES[@]} -> $DEST (ifdh, --force=$FORCE)"
 n=0; ok=0; skip=0; bad=0; consec=0
 : > "$FAILED"
 fin(){ echo "Fin: copiados $ok, ya estaban $skip, fallos $bad (de ${#FILES[@]})"; }
+progress(){ (( n % 100 == 0 )) && echo "[avance] $n de ${#FILES[@]}: copiados $ok, ya estaban $skip, fallos $bad"; }
 check_consec(){ (( consec >= MAXCONSEC )) && { echo "ERROR: $consec fallos seguidos; para. Último: $(tail -1 "$FAILED")"; fin; exit 1; }; }
 for f in "${FILES[@]}"; do
   n=$((n+1))
   ssize=$(size_of "$SRC/$f")
-  if [[ "$(size_of "$DEST/$f")" == "$ssize" ]]; then skip=$((skip+1)); continue; fi
+  if [[ "$(size_of "$DEST/$f")" == "$ssize" ]]; then skip=$((skip+1)); progress; continue; fi
   if [[ -n "${DRYRUN:-}" ]]; then echo "copiaría $f ($ssize B)"; continue; fi
   (( (ok+bad) % RENEW == RENEW-1 )) && renew
   if err=$(ifdh cp --force=$FORCE "$SRC/$f" "$DEST/$f" 2>&1) && [[ "$(size_of "$DEST/$f")" == "$ssize" ]]; then
@@ -71,7 +72,7 @@ for f in "${FILES[@]}"; do
     echo "$f ifdh: $(echo "$err" | grep -v '^\s*$' | tail -1) (tamaño en destino $(size_of "$DEST/$f") de $ssize)" >> "$FAILED"
     bad=$((bad+1)); consec=$((consec+1)); check_consec
   fi
-  (( n % 100 == 0 )) && echo "[avance] $n de ${#FILES[@]}: copiados $ok, ya estaban $skip, fallos $bad"
+  progress
 done
 fin
 (( bad > 0 )) && echo "Fallos en $FAILED: relanzar el mismo comando (salta los que ya están)"
